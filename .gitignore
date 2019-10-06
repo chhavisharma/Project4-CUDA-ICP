@@ -25,7 +25,8 @@ build
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*
@@ -210,6 +211,7 @@ install_manifest.txt
 *.la
 *.a
 *.lib
+!/external/lib/*/**/*
 
 # Executables
 *.exe
