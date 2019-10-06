@@ -1,0 +1,87 @@
+/**
+ * @file      main.cpp
+ * @brief     Stream compaction test program
+ * @authors   Kai Ninomiya
+ * @date      2015
+ * @copyright University of Pennsylvania
+ */
+
+#include <cstdio>
+#include <iostream>
+
+#include <sstream>
+#include <fstream>
+#include <picp/picp.h>
+#include <picp/common.h>
+#include "testing_helpers.hpp"
+#include <vector>
+
+
+using namespace std;
+#define dims 3
+
+float * Ybuffer;
+float * Xbuffer;
+
+void read_data(float * buffer, string filename) {
+
+	std::ifstream filein(filename);
+	int count = 0;
+	int vertices_cnt;
+	std::vector<std::string> header_info;
+
+	// ply files have vertex count on line 21
+	for (std::string line; std::getline(filein, line); )
+	{	// get number of vertices
+		if (count == 17) {
+			std::istringstream iss(line);
+			for (std::string s; iss >> s; )
+				header_info.push_back(s);
+			vertices_cnt = std::stoi(header_info[2]);
+			break;
+		}
+		count++;
+	}
+	cout << "vertex count :" << vertices_cnt << endl;
+	filein.clear();
+	filein.seekg(0, ios::beg);
+	count = 0;
+
+	buffer = new float[vertices_cnt*dims*sizeof(float)];
+
+	//vertices are stored from line 24 onwards until vcount
+	for (std::string line; std::getline(filein, line); )
+	{	
+		if (count > 24 + vertices_cnt) break;
+		if (count >= 24 ) {
+			std::istringstream is(line);
+			int idx = (count-24)*dims;
+			is >> buffer[idx] >> buffer[idx + 1] >> buffer[idx + 2];
+			//cout << buffer[idx] << " " << buffer[idx + 1] << " " << buffer[idx + 2] << endl;
+		}
+		count++;
+	}
+	cout << "data load completed :" << (count-24-1)<< endl;
+	return;
+}
+
+
+int main(int argc, char* argv[]) {
+    printf("*************************************\n");
+    printf("** Prallel Iterative Closest Point **\n");
+    printf("*************************************\n");
+	
+	// Read Point CLoud Data
+	printf("** Read Point CLoud Data **\n");
+	cout<< "Data File Y(target): "<<argv[1]<<endl;
+	read_data(Ybuffer, argv[1]);
+	
+	cout << "Data File X(source): " << argv[2] << endl;
+	read_data(Xbuffer, argv[2]);
+
+
+	delete[] Ybuffer;
+	delete[] Xbuffer;
+
+
+}
