@@ -10,14 +10,13 @@
 #include <vector>
 
 namespace Points {
-    void initSimulation(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer);
+    void initCpuICP(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer);
+	void stepSimulationICPNaive(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, float dt);
+	
+	void initGPU(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer);
+	void stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, float dt);
+
 	void copyPointsToVBO(float *vbodptr_positions, float *vbodptr_velocities);
-
-
-	void stepSimulationNaive(float dt);
-    void stepSimulationScatteredGrid(float dt);
-    void stepSimulationCoherentGrid(float dt);
-
     void endSimulation();
     void unitTest();
 }

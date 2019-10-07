@@ -14,7 +14,7 @@
 
 // LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
 #define VISUALIZE 1
-#define UNIFORM_GRID 0
+#define GPUNAIVE 1
 #define COHERENT_GRID 0
 #define dims 3
 
@@ -27,7 +27,7 @@ std::vector<glm::vec3> Xbuffer;
 
 
 // Data read function 
-void read_data(std::vector<glm::vec3> &buffer, std::string filename) {
+void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offset) {
 
 	std::ifstream filein(filename);
 	int count = 0;
@@ -59,10 +59,10 @@ void read_data(std::vector<glm::vec3> &buffer, std::string filename) {
 		if (count >= 24) {
 			std::istringstream is(line);
 
-			float x, y, z;
+			float x=0.0f, y = 0.0f, z = 0.0f;
 			is >> x >> y >> z;
 
-			glm::vec3 tmp(x, y, z);
+			glm::vec3 tmp(x+offset, y+offset, z+offset);
 			//std::cout<<x<<" "<<y<<" "<<z<<std::endl;
 			buffer.push_back(tmp);
 
@@ -75,6 +75,8 @@ void read_data(std::vector<glm::vec3> &buffer, std::string filename) {
 	std::cout << "data load completed :" << (count - 24 - 1) << std::endl;
 	return;
 }
+
+
 
 
 
@@ -91,10 +93,10 @@ int main(int argc, char* argv[]) {
 	int x_sz = 0;
 
 	std::cout << "Data File Y(target): " << argv[1] << std::endl;
-	read_data(Ybuffer, argv[1]);
+	read_data(Ybuffer, argv[1], 0.0f);
 
 	std::cout << "Data File X(source): " << argv[2] << std::endl;
-	read_data(Xbuffer, argv[2]);
+	read_data(Xbuffer, argv[2], 0.0f);
 
 	// Initialize drawing state
 	N_FOR_VIS = Ybuffer.size() + Xbuffer.size();
@@ -189,7 +191,8 @@ bool init(int argc, char **argv) {
 	cudaGLRegisterBufferObject(pointVBO_velocities);
 
 	// Initialize N-body simulation
-	Points::initSimulation(Ybuffer, Xbuffer);
+	Points::initCpuICP(Ybuffer, Xbuffer);
+	Points::initGPU(Ybuffer, Xbuffer);
 
 	updateCamera();
 
@@ -263,6 +266,7 @@ void initShaders(GLuint * program) {
 //====================================
 // Main loop
 //====================================
+
 void runCUDA() {
 	// Map OpenGL buffer object for writing from CUDA on a single GPU
 	// No data is moved (Win & Linux). When mapped to CUDA, OpenGL should not
@@ -276,12 +280,12 @@ void runCUDA() {
 	cudaGLMapBufferObject((void**)&dptrVertVelocities, pointVBO_velocities);
 
 	// execute the kernel
-#if UNIFORM_GRID && COHERENT_GRID
+#if GPUNAIVE && COHERENT_GRID
 	Points::stepSimulationCoherentGrid(DT);
-#elif UNIFORM_GRID
-	Points::stepSimulationScatteredGrid(DT);
+#elif GPUNAIVE
+	Points::stepSimulationGPUNaive(Ybuffer, Xbuffer, DT);
 #else
-	;// Points::stepSimulationNaive(DT);
+	Points::stepSimulationICPNaive(Ybuffer, Xbuffer, DT);
 #endif
 
 #if VISUALIZE

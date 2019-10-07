@@ -6,7 +6,15 @@
 #include "utilityCore.hpp"
 #include "kernel.h"
 
-// LOOK-2.1 potentially useful for doing grid-based neighbor search
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+#include <thrust/scan.h>
+#include <thrust/reduce.h>
+
+#include "svd3.h" // credits to author
+
 #ifndef imax
 #define imax( a, b ) ( ((a) > (b)) ? (a) : (b) )
 #endif
@@ -17,18 +25,16 @@
 
 #define checkCUDAErrorWithLine(msg) checkCUDAError(msg, __LINE__)
 
-/**
-* Check for CUDA errors; print and exit if there was a problem.
-*/
+
 void checkCUDAError(const char *msg, int line = -1) {
-  cudaError_t err = cudaGetLastError();
-  if (cudaSuccess != err) {
-    if (line >= 0) {
-      fprintf(stderr, "Line %d: ", line);
-    }
-    fprintf(stderr, "Cuda error: %s: %s.\n", msg, cudaGetErrorString(err));
-    exit(EXIT_FAILURE);
-  }
+	cudaError_t err = cudaGetLastError();
+	if (cudaSuccess != err) {
+		if (line >= 0) {
+			fprintf(stderr, "Line %d: ", line);
+		}
+		fprintf(stderr, "Cuda error: %s: %s.\n", msg, cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
 }
 
 
@@ -37,19 +43,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 *****************/
 
 /*! Block size used for CUDA kernel launch. */
-#define blockSize 128
-
-// LOOK-1.2 Parameters for the points algorithm.
-// These worked well in our reference implementation.
-#define rule1Distance 5.0f
-#define rule2Distance 3.0f
-#define rule3Distance 5.0f
-
-#define rule1Scale 0.01f
-#define rule2Scale 0.1f
-#define rule3Scale 0.1f
-
-#define maxSpeed 1.0f
+#define blockSize 512
 
 /*! Size of the starting area in simulation space. */
 #define scene_scale 0.10f
@@ -61,150 +55,39 @@ void checkCUDAError(const char *msg, int line = -1) {
 int numObjects;
 dim3 threadsPerBlock(blockSize);
 
-// LOOK-1.2 - These buffers are here to hold all your point information.
-// These get allocated for you in Points::initSimulation.
-// Consider why you would need two velocity buffers in a simulation where each
-// point cares about its neighbors' velocities.
-// These are called ping-pong buffers.
 glm::vec3 *dev_pos;
-glm::vec3 *dev_vel1;
-glm::vec3 *dev_vel2;
+glm::vec3 *dev_col;
+glm::vec3 *Ybuffer_corr;
 
-// LOOK-2.1 - these are NOT allocated for you. You'll have to set up the thrust
-// pointers on your own too.
+glm::vec3 *dev_Ybuffer;
+glm::vec3 *dev_Xbuffer;
+glm::vec3 *dev_YbufferCorr;
+glm::mat3 *dev_intermMats;
 
-// For efficient sorting and the uniform grid. These should always be parallel.
-int *dev_particleArrayIndices; // What index in dev_pos and dev_velX represents this particle?
-int *dev_particleGridIndices; // What grid cell is this particle in?
+glm::mat3 *dev_matrix1;
+glm::mat3 *dev_matrix2;
+glm::mat3 *dev_matrix3;
 
-// needed for use with thrust
-thrust::device_ptr<int> dev_thrust_particleArrayIndices;
-thrust::device_ptr<int> dev_thrust_particleGridIndices;
 
-int *dev_gridCellStartIndices; // What part of dev_particleArrayIndices belongs
-int *dev_gridCellEndIndices;   // to this cell?
 
-// TODO-2.3 - consider what additional buffers you might need to reshuffle
-// the position and velocity data to be coherent within cells.
-glm::vec3 *dev_pos_shuffle;
-glm::vec3 *dev_vel1_shuffle;
 
 cudaEvent_t start, stop;
 
-float milliseconds = 0;
-int milliseccnts = 0;
-// LOOK-2.1 - Grid parameters based on simulation parameters.
-// These are automatically computed for you in Points::initSimulation
-int gridCellCount;
-int gridSideCount;
-float gridCellWidth;
-float gridInverseCellWidth;
-glm::vec3 gridMinimum;
 
 /******************
-* initSimulation *
+* initCpuICP *
 ******************/
 
 __host__ __device__ unsigned int hash(unsigned int a) {
-  a = (a + 0x7ed55d16) + (a << 12);
-  a = (a ^ 0xc761c23c) ^ (a >> 19);
-  a = (a + 0x165667b1) + (a << 5);
-  a = (a + 0xd3a2646c) ^ (a << 9);
-  a = (a + 0xfd7046c5) + (a << 3);
-  a = (a ^ 0xb55a4f09) ^ (a >> 16);
-  return a;
+	a = (a + 0x7ed55d16) + (a << 12);
+	a = (a ^ 0xc761c23c) ^ (a >> 19);
+	a = (a + 0x165667b1) + (a << 5);
+	a = (a + 0xd3a2646c) ^ (a << 9);
+	a = (a + 0xfd7046c5) + (a << 3);
+	a = (a ^ 0xb55a4f09) ^ (a >> 16);
+	return a;
 }
 
-/**
-* LOOK-1.2 - this is a typical helper function for a CUDA kernel.
-* Function for generating a random vec3.
-*/
-__host__ __device__ glm::vec3 generateRandomVec3(float time, int index) {
-  thrust::default_random_engine rng(hash((int)(index * time)));
-  thrust::uniform_real_distribution<float> unitDistrib(-1, 1);
-
-  return glm::vec3((float)unitDistrib(rng), (float)unitDistrib(rng), (float)unitDistrib(rng));
-}
-
-/**
-* LOOK-1.2 - This is a basic CUDA kernel.
-* CUDA kernel for generating points with a specified mass randomly around the star.
-*/
-__global__ void kernGenerateRandomPosArray(int time, int N, glm::vec3 * arr, float scale) {
-  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-  if (index < N) {
-    glm::vec3 rand = generateRandomVec3(time, index);
-    arr[index].x = scale * rand.x;
-    arr[index].y = scale * rand.y;
-    arr[index].z = scale * rand.z;
-  }
-}
-
-/**
-* Initialize memory, update some globals
-
-void Points::initSimulation(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer) {
-  
-  numObjects = N;
-  dim3 fullBlocksPerGrid((N + blockSize - 1) / blockSize);
-
-  // LOOK-1.2 - This is basic CUDA memory management and error checking.
-  // Don't forget to cudaFree in  Points::endSimulation.
-  cudaMalloc((void**)&dev_pos, N * sizeof(glm::vec3));
-  checkCUDAErrorWithLine("cudaMalloc dev_pos failed!");
-
-  cudaMalloc((void**)&dev_vel1, N * sizeof(glm::vec3));
-  checkCUDAErrorWithLine("cudaMalloc dev_vel1 failed!");
-
-  cudaMalloc((void**)&dev_vel2, N * sizeof(glm::vec3));
-  checkCUDAErrorWithLine("cudaMalloc dev_vel2 failed!");
-
-  // LOOK-1.2 - This is a typical CUDA kernel invocation.
-  kernGenerateRandomPosArray<<<fullBlocksPerGrid, blockSize>>>(1, numObjects,dev_pos, scene_scale);
-  checkCUDAErrorWithLine("kernGenerateRandomPosArray failed!");
-
-  // LOOK-2.1 computing grid params
-  gridCellWidth = 2.0f * std::max(std::max(rule1Distance, rule2Distance), rule3Distance);
-  int halfSideCount = (int)(scene_scale / gridCellWidth) + 1;
-  gridSideCount = 2 * halfSideCount;
-
-  gridCellCount = gridSideCount * gridSideCount * gridSideCount;
-  gridInverseCellWidth = 1.0f / gridCellWidth;
-  float halfGridWidth = gridCellWidth * halfSideCount;
-  gridMinimum.x -= halfGridWidth;
-  gridMinimum.y -= halfGridWidth;
-  gridMinimum.z -= halfGridWidth;
-
-  // TODO-2.1 TODO-2.3 - Allocate additional buffers here.
-  
-  cudaMalloc((void**)&dev_gridCellStartIndices, gridCellCount * sizeof(int));
-  checkCUDAErrorWithLine("cudaMalloc dev_gridCellStartIndices failed!");
-
-  cudaMalloc((void**)&dev_gridCellEndIndices, gridCellCount * sizeof(int));
-  checkCUDAErrorWithLine("cudaMalloc dev_gridCellEndIndices failed!");
-  
-  cudaMalloc((void**)&dev_particleGridIndices, N * sizeof(int));
-  checkCUDAErrorWithLine("cudaMalloc dev_intKeys failed!");
-
-  cudaMalloc((void**)&dev_particleArrayIndices, N * sizeof(int));
-  checkCUDAErrorWithLine("cudaMalloc dev_intValues failed!");
-
-  dev_thrust_particleGridIndices = thrust::device_pointer_cast<int>(dev_particleGridIndices);
-  dev_thrust_particleArrayIndices = thrust::device_pointer_cast<int>(dev_particleArrayIndices);
-
-  cudaMalloc((void**)&dev_pos_shuffle, N * sizeof(glm::vec3));
-  checkCUDAErrorWithLine("cudaMalloc dev_pos_shuffle failed!");
-
-  cudaMalloc((void**)&dev_vel1_shuffle, N * sizeof(glm::vec3));
-  checkCUDAErrorWithLine("cudaMalloc dev_vel1_shuffle failed!");
-
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-
-  cudaDeviceSynchronize();
-}
-
-*/
 
 __global__ void kernResetVec3Buffer(int N, glm::vec3 *intBuffer, glm::vec3 value) {
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -213,30 +96,29 @@ __global__ void kernResetVec3Buffer(int N, glm::vec3 *intBuffer, glm::vec3 value
 	}
 }
 
-
-void Points::initSimulation(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer) {
+void Points::initCpuICP(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer) {
 
 	int Y = Ybuffer.size();
 	int X = Xbuffer.size();
 
 	numObjects = Y + X;
 
+	// Only for visulization
+
 	cudaMalloc((void**)&dev_pos, numObjects * sizeof(glm::vec3));
 	checkCUDAErrorWithLine("cudaMalloc dev_pos failed!");
 
-	cudaMalloc((void**)&dev_vel1, numObjects * sizeof(glm::vec3));
+	cudaMalloc((void**)&dev_col, numObjects * sizeof(glm::vec3));
 	checkCUDAErrorWithLine("cudaMalloc dev_color failed!");
 
 	cudaMemcpy(dev_pos, &Ybuffer[0], Ybuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
 	cudaMemcpy(&dev_pos[Ybuffer.size()], &Xbuffer[0], Xbuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
 
-	kernResetVec3Buffer <<<dim3((Y + blockSize - 1) / blockSize), blockSize >> > (Y, dev_vel1, glm::vec3(1, 1, 1));
-	kernResetVec3Buffer <<<dim3((X + blockSize - 1) / blockSize), blockSize >> > (X, &dev_vel1[Y], glm::vec3(0, 1, 0));
+	kernResetVec3Buffer << <dim3((Y + blockSize - 1) / blockSize), blockSize >> > (Y, dev_col, glm::vec3(1, 1, 1));
+	kernResetVec3Buffer << <dim3((X + blockSize - 1) / blockSize), blockSize >> > (X, &dev_col[Y], glm::vec3(0, 1, 0));
 
 	cudaThreadSynchronize();
 }
-
-
 
 
 /******************
@@ -247,41 +129,42 @@ void Points::initSimulation(std::vector<glm::vec3> &Ybuffer, std::vector<glm::ve
 * Copy the point positions into the VBO so that they can be drawn by OpenGL.
 */
 __global__ void kernCopyPositionsToVBO(int N, glm::vec3 *pos, float *vbo, float s_scale) {
-  int index = threadIdx.x + (blockIdx.x * blockDim.x);
+	int index = threadIdx.x + (blockIdx.x * blockDim.x);
 
-  float c_scale = -1.0f / s_scale;
+	float c_scale = -1.0f / s_scale;
 
-  if (index < N) {
-    vbo[4 * index + 0] = pos[index].x * c_scale;
-    vbo[4 * index + 1] = pos[index].y * c_scale;
-    vbo[4 * index + 2] = pos[index].z * c_scale;
-    vbo[4 * index + 3] = 1.0f;
-  }
+	if (index < N) {
+		vbo[4 * index + 0] = pos[index].x * c_scale;
+		vbo[4 * index + 1] = pos[index].y * c_scale;
+		vbo[4 * index + 2] = pos[index].z * c_scale;
+		vbo[4 * index + 3] = 1.0f;
+	}
 }
 
 __global__ void kernCopyVelocitiesToVBO(int N, glm::vec3 *vel, float *vbo, float s_scale) {
-  int index = threadIdx.x + (blockIdx.x * blockDim.x);
+	int index = threadIdx.x + (blockIdx.x * blockDim.x);
 
-  if (index < N) {
-    vbo[4 * index + 0] = vel[index].x + 0.3f;
-    vbo[4 * index + 1] = vel[index].y + 0.3f;
-    vbo[4 * index + 2] = vel[index].z + 0.3f;
-    vbo[4 * index + 3] = 1.0f;
-  }
+	if (index < N) {
+		vbo[4 * index + 0] = vel[index].x + 0.3f;
+		vbo[4 * index + 1] = vel[index].y + 0.3f;
+		vbo[4 * index + 2] = vel[index].z + 0.3f;
+		vbo[4 * index + 3] = 1.0f;
+	}
 }
 
 /**
 * Wrapper for call to the kernCopypointsToVBO CUDA kernel.
 */
 void Points::copyPointsToVBO(float *vbodptr_positions, float *vbodptr_velocities) {
-  dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+	
+	dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
 
-  kernCopyPositionsToVBO << <fullBlocksPerGrid, blockSize >> >(numObjects, dev_pos, vbodptr_positions, scene_scale);
-  kernCopyVelocitiesToVBO << <fullBlocksPerGrid, blockSize >> >(numObjects, dev_vel1, vbodptr_velocities, scene_scale);
+	kernCopyPositionsToVBO << <fullBlocksPerGrid, blockSize >> > (numObjects, dev_pos, vbodptr_positions, scene_scale);
+	kernCopyVelocitiesToVBO << <fullBlocksPerGrid, blockSize >> > (numObjects, dev_col, vbodptr_velocities, scene_scale);
 
-  checkCUDAErrorWithLine("copyPointsToVBO failed!");
+	checkCUDAErrorWithLine("copyPointsToVBO failed!");
 
-  cudaDeviceSynchronize();
+	cudaDeviceSynchronize();
 }
 
 
@@ -289,634 +172,486 @@ void Points::copyPointsToVBO(float *vbodptr_positions, float *vbodptr_velocities
 * stepSimulation *
 ******************/
 
-/**
-* LOOK-1.2 You can use this as a helper for kernUpdateVelocityBruteForce.
-* __device__ code can be called from a __global__ context
-* Compute the new velocity on the body with index `iSelf` due to the `N` points
-* in the `pos` and `vel` arrays.
-*/
-__device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
+__global__ void kernUpdatePos(int N, glm::vec3 *dev_pos, glm::vec3 val) {
 	
-	glm::vec3 pCenter(0.0f, 0.0f, 0.0f);
-	glm::vec3 pDist(0.0f, 0.0f, 0.0f);
-	glm::vec3 pVel(0.0f, 0.0f, 0.0f);
-	int pcounter = 0;
-	int vcounter = 0;
-
-	for (int b = 0; b < N; b++) {
-		
-		// Rule 1: points fly towards their local perceived center of mass
-		if (b != iSelf && glm::distance(pos[b],pos[iSelf]) < rule1Distance) {
-			pCenter += pos[b];
-			pcounter += 1;
-		}
-		// Rule 2: points try to stay a distance d away from each other
-		if( b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule2Distance) {
-			pDist -= (pos[b] - pos[iSelf]);
-		}
-		// Rule 3: points try to match the speed of surrounding points
-		if(b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule3Distance) {
-			pVel += vel[b];
-			vcounter += 1;
-		}
+	// Update position by velocity
+	int index = threadIdx.x + (blockIdx.x * blockDim.x);
+	//printf("index =  %d \n",index);
+	if (index >= N) {
+		return;
 	}
-	
-	// Accumuate values
-	if (pcounter != 0) {
-		pCenter /= pcounter;
-		pCenter = (pCenter - pos[iSelf])*rule1Scale;
-	}
+	dev_pos[index] = dev_pos[index] + val;
 
-	pDist = pDist * rule2Scale;
-
-	if (vcounter != 0) {
-		pVel /= vcounter;
-		pVel = pVel * rule3Scale;
-	}
-	
-	// Return overall change in velocity!
-	return pCenter + pDist + pVel;
 }
 
-/**
-* TODO-1.2 implement basic flocking
-* For each of the `N` bodies, update its position based on its current velocity.
-*/
-__global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
-  glm::vec3 *vel1, glm::vec3 *vel2) {
-		
-	glm::vec3 cvel(0.0f, 0.0f, 0.0f);
-	
-	//Reslove Boid's index
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
-	
-	// compute new velocity using all 3 rules!
-	if (iSelf < N) {
-		cvel = computeVelocityChange(N, iSelf, pos, vel1);
-		//printf("cval %f %f %f", (cvel.x, cvel.y, cvel.z));
-		// Clamp max speed
-		// cvel = glm::clamp(cvel,-maxSpeed, maxSpeed);
-		// Record the new velocity into vel2. Question: why NOT vel1?
-		// Becaase we want all threads to finish computing new vel before updates are made.
-		// This new ve lcomputation is dependent on other point-velocitites		
-		
-		vel2[iSelf] = cvel + vel1[iSelf];
+__global__ void kernUpdateCol(int N, glm::vec3 *dev_col, int reducedSize) {
 
-		vel2[iSelf] = glm::clamp(vel2[iSelf], -maxSpeed, maxSpeed);
+	int index = threadIdx.x + (blockIdx.x * blockDim.x);
+
+	if (index >= N) {
+		return;
+	}
+	if (index >= reducedSize) {
+		dev_col[index] = glm::vec3(0.0f, 0.0f, 0.0f);
 	}
 }
 
-/**
-* LOOK-1.2 Since this is pretty trivial, we implemented it for you.
-* For each of the `N` bodies, update its position based on its current velocity.
-*/
-__global__ void kernUpdatePos(int N, float dt, glm::vec3 *pos, glm::vec3 *vel) {
-  // Update position by velocity
-  int index = threadIdx.x + (blockIdx.x * blockDim.x);
-  if (index >= N) {
-    return;
-  }
-  glm::vec3 thisPos = pos[index];
-  thisPos += vel[index] * dt;
 
-  // Wrap the points around so we don't lose them
-  thisPos.x = thisPos.x < -scene_scale ? scene_scale : thisPos.x;
-  thisPos.y = thisPos.y < -scene_scale ? scene_scale : thisPos.y;
-  thisPos.z = thisPos.z < -scene_scale ? scene_scale : thisPos.z;
-
-  thisPos.x = thisPos.x > scene_scale ? -scene_scale : thisPos.x;
-  thisPos.y = thisPos.y > scene_scale ? -scene_scale : thisPos.y;
-  thisPos.z = thisPos.z > scene_scale ? -scene_scale : thisPos.z;
-
-  pos[index] = thisPos;
-}
-
-// LOOK-2.1 Consider this method of computing a 1D index from a 3D grid index.
-// LOOK-2.3 Looking at this method, what would be the most memory efficient
-//          order for iterating over neighboring grid cells?
-//          for(x)
-//            for(y)
-//             for(z)? Or some other order?
-__device__ int gridIndex3Dto1D(int x, int y, int z, int gridResolution) {
-  return x + y * gridResolution + z * gridResolution * gridResolution;
-}
-
-__global__ void kernComputeIndices(int N, int gridResolution,
-  glm::vec3 gridMin, float inverseCellWidth,
-  glm::vec3 *pos, int *indices, int *gridIndices) {
-    // TODO-2.1
-
-	// - Label each point with the index of its grid cell.
-	//Reslove Boid's index
-	// - Set up a parallel array of integer indices as pointers to the actual
-	//   point data in pos and vel1/vel2
-
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-	if (iSelf < N) {
-		glm::vec3 grid_ind  = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth);
-		gridIndices[iSelf]  = (int)gridIndex3Dto1D((int)grid_ind.x, (int)grid_ind.y, (int)grid_ind.z, gridResolution);
-		indices[iSelf]		= iSelf;
-	}
-}
-
-// LOOK-2.1 Consider how this could be useful for indicating that a cell
-//          does not enclose any points
-__global__ void kernResetIntBuffer(int N, int *intBuffer, int value) {
-  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-  if (index < N) {
-    intBuffer[index] = value;
-  }
-}
-
-__global__ void kernIdentifyCellStartEnd(int N, int *particleGridIndices,
-  int *gridCellStartIndices, int *gridCellEndIndices) {
-  // TODO-2.1
-  // Identify the start point of each cell in the gridIndices array.
-  // This is basically a parallel unrolling of a loop that goes
-  // "this index doesn't match the one before it, must be a new cell!"
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-	if (iSelf < N) {
-		if (iSelf == 0) {
-			gridCellStartIndices[particleGridIndices[0]] = 0;
-		}
-		else if (iSelf == N-1) {
-			gridCellEndIndices[particleGridIndices[N-1]] = N-1;
-		}
-		else if(particleGridIndices[iSelf]!= particleGridIndices[iSelf-1]){
-
-			gridCellEndIndices[particleGridIndices[iSelf - 1]]= iSelf - 1;
-			gridCellStartIndices[particleGridIndices[iSelf]] = iSelf;
-		}
-	}
-}
-
-__device__ int gridsToCheck(int x, int y, int z, int gridResolution) {
-	return x + y * gridResolution + z * gridResolution * gridResolution;
-}
-
-__global__ void kernUpdateVelNeighborSearchScattered(
-  int N, int gridResolution, glm::vec3 gridMin,
-  float inverseCellWidth, float cellWidth,
-  int *gridCellStartIndices, int *gridCellEndIndices,
-  int *particleArrayIndices,
-  glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
-	// TODO-2.1 - Update a point's velocity using the uniform grid to reduce
-	// the number of points that need to be checked.
-
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
+void findCorrespondencesCPU(int Y, int X, std::vector<glm::vec3>& Ybuffer_corr, std::vector<glm::vec3>& Ybuffer, std::vector<glm::vec3>& Xbuffer) {
 	
-	if (iSelf < N) {
-		
-		// - Identify the grid cell that this particle is in
-		glm::vec3 gird3Didx = glm::floor((pos[iSelf]-gridMin) * inverseCellWidth);
-		//printf("gird3Didx %f %f %f \n", gird3Didx.x, gird3Didx.y, gird3Didx.z);
+	// size of Y_buffer corr is size of X
 
-		// Variables to hold accumulated vel per rule
-		glm::vec3 pCenter(0.0f, 0.0f, 0.0f);
-		glm::vec3 pVel(0.0f, 0.0f, 0.0f);
-		glm::vec3 pDist(0.0f, 0.0f, 0.0f);
+	for (int i = 0; i < X; i++) { // for each X
 
-		int cnt_pCenter = 0;
-		int cnt_pVel = 0;
+		Ybuffer_corr[i] = glm::vec3(0.0f,0.0f,0.0f);
+		float dist = glm::distance(Ybuffer[0],Xbuffer[i]);
 
-		//int x_min = (int)gird3Didx.x - 1, int y_min = (int)gird3Didx.y - 1; int z_min = (int)gird3Didx.z -1;
-		//int x_max = (int)gird3Didx.x + 1, int y_max = (int)gird3Didx.y + 1; int z_max = (int)gird3Didx.z +1;
+		for (int j = 1; j < Y; j++) { // all Y's
 
-		// variable sphere limit to get candidate cells
-		float maxDistance = imax(imax(rule1Distance, rule2Distance), rule3Distance);
-
-		glm::vec3 gird3D_max = glm::floor((pos[iSelf] - gridMin + maxDistance) * inverseCellWidth);
-		glm::vec3 gird3D_min = glm::floor((pos[iSelf] - gridMin - maxDistance) * inverseCellWidth);
-
-		int x_max = gird3D_max.x; int y_max = (int)gird3D_max.y, int z_max = (int)gird3D_max.z;
-		int x_min = gird3D_min.x; int y_min = (int)gird3D_min.y, int z_min = (int)gird3D_min.z;
-
-		for (int x = x_min; x <= x_max; x++) {
-			for (int y = y_min; y <= y_max; y++) {
-				for (int z = z_min; z <= z_max; z++) {
-					if (x >= 0 && y >= 0 && z >= 0 && x < gridResolution && y < gridResolution && z < gridResolution) {
-
-
-						// - For each cell, read the start/end indices in the point pointer array.
-						int grid1Didx = gridIndex3Dto1D(x, y, z, gridResolution);
-						int strt_idx = gridCellStartIndices[grid1Didx];
-						int end_idx = gridCellEndIndices[grid1Didx];
-
-						if (strt_idx < 0 || end_idx < 0 || strt_idx >= N || end_idx >= N) continue;
-
-						for (int grid_idx = strt_idx; grid_idx <= end_idx; grid_idx++) {
-							int b = particleArrayIndices[grid_idx];
-								
-							// Rule 1: points fly towards their local perceived center of mass, which excludes themselves
-							if (b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule1Distance) {
-								pCenter += pos[b];
-								cnt_pCenter += 1;
-							}
-							// Rule 2: points try to stay a distance d away from each other
-							if (b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule2Distance) {
-								pDist -= (pos[b] - pos[iSelf]);
-							}
-							// Rule 3: points try to match the speed of surrounding points
-							if (b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule3Distance) {
-								pVel += vel1[b];
-								cnt_pVel += 1;
-							}
-						}
-					}
-				}
+			float d = glm::distance(Ybuffer[j], Xbuffer[i]);
+			
+			if (dist > d) {
+				dist = d;
+				Ybuffer_corr[i] = Ybuffer[j];
 			}
 		}
-
-		// Accumulated Avg
-		if (cnt_pCenter != 0) {
-			pCenter /= cnt_pCenter;
-			pCenter = (pCenter - pos[iSelf])*rule1Scale;
-		}
-		
-		pDist = pDist * rule2Scale;
-
-		if (cnt_pVel != 0) {
-			pVel /= cnt_pVel;
-			pVel = pVel * rule3Scale;
-		}
-
-		// - Clamp the speed change before putting the new speed in vel2
-		vel2[iSelf] = pCenter + pDist + pVel + vel1[iSelf];
-		vel2[iSelf] = glm::clamp(vel2[iSelf], -maxSpeed, maxSpeed);
+		//std::cout<< std::endl << Xbuffer[i].x << " " << Xbuffer[i].y << " " << Xbuffer[i].z << std::endl;
+		//std::cout << Ybuffer_corr[i].x << " " << Ybuffer_corr[i].y << " " << Ybuffer_corr[i].z << std::endl;
 	}
+
 }
 
-__global__ void kernUpdateVelNeighborSearchCoherent(
-  int N, int gridResolution, glm::vec3 gridMin,
-  float inverseCellWidth, float cellWidth,
-  int *gridCellStartIndices, int *gridCellEndIndices,
-  glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
-  // TODO-2.3 - This should be very similar to kernUpdateVelNeighborSearchScattered,
-  // except with one less level of indirection.
-  // This should expect gridCellStartIndices and gridCellEndIndices to refer
-  // directly to pos and vel1.
-  // - Identify the grid cell that this particle is in
-  // - Identify which cells may contain neighbors. This isn't always 8.
-  // - For each cell, read the start/end indices in the point pointer array.
-  //   DIFFERENCE: For best results, consider what order the cells should be
-  //   checked in to maximize the memory benefits of reordering the points data.
-  // - Access each point in the cell and compute velocity change from
-  //   the points rules, if this point is within the neighborhood distance.
-  // - Clamp the speed change before putting the new speed in vel2
-
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-	if (iSelf < N) {
-		glm::vec3 gird3Didx = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth);
-
-		glm::vec3 pCenter(0.0f, 0.0f, 0.0f);
-		glm::vec3 pVel(0.0f, 0.0f, 0.0f);
-		glm::vec3 pDist(0.0f, 0.0f, 0.0f);
-
-		int cnt_pCenter = 0;
-		int cnt_pVel = 0;
-
-		//int x_min = (int)gird3Didx.x - 1, int y_min = (int)gird3Didx.y - 1, int z_min = (int)gird3Didx.z -1;
-		//int x_max = (int)gird3Didx.x + 1, int y_max = (int)gird3Didx.y + 1, int z_max = (int)gird3Didx.z +1;
-
-		// variable sphere limit to get candidate cells
-		float maxDistance = imax(imax(rule1Distance, rule2Distance), rule3Distance);
-
-		glm::vec3 gird3D_max = glm::floor((pos[iSelf] - gridMin + maxDistance) * inverseCellWidth);
-		glm::vec3 gird3D_min = glm::floor((pos[iSelf] - gridMin - maxDistance) * inverseCellWidth);
-
-		int x_max = gird3D_max.x; int y_max = (int)gird3D_max.y; int z_max = (int)gird3D_max.z;
-		int x_min = gird3D_min.x; int y_min = (int)gird3D_min.y; int z_min = (int)gird3D_min.z;
-		//int CellCheckCounter = 0;
-		
-		for (int x = x_min; x <= x_max; x++) {
-			for (int y = y_min; y <= y_max; y++) {
-				for (int z = z_min; z <= z_max; z++) {
-					if (x >= 0 && y >= 0 && z >= 0 && x < gridResolution && y < gridResolution && z < gridResolution) {
-						//CellCheckCounter += 1;
-
-						// - For each cell, read the start/end indices in the point pointer array.
-						int grid1Didx = gridIndex3Dto1D(x, y, z, gridResolution);
-						int strt_idx = gridCellStartIndices[grid1Didx];
-						int end_idx = gridCellEndIndices[grid1Didx];
-
-						if (strt_idx < 0 || end_idx <0 || strt_idx >= N|| end_idx >= N ) continue;
-
-						for (int b = strt_idx; b <= end_idx; b++) {
-
-							// Rule 1: points fly towards their local perceived center of mass, which excludes themselves
-							if (b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule1Distance) {
-								pCenter += pos[b];
-								cnt_pCenter += 1;
-							}
-
-							// Rule 2: points try to stay a distance d away from each other
-							if (b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule2Distance) {
-								pDist -= (pos[b] - pos[iSelf]);
-							}
-
-							// Rule 3: points try to match the speed of surrounding points
-							if (b != iSelf && glm::distance(pos[b], pos[iSelf]) < rule3Distance) {
-								pVel += vel1[b];
-								cnt_pVel += 1;
-							}
-						}
-					}
-				}
-			}
-		}
-
-		//printf("iself %d | Cell check counter = %d \n",(iSelf, CellCheckCounter));
-
-		// Accumulated Avg
-		if (cnt_pCenter != 0) {
-			pCenter /= cnt_pCenter;
-			pCenter = (pCenter - pos[iSelf])*rule1Scale;
-		}
-
-		pDist = pDist * rule2Scale;
-
-		if (cnt_pVel != 0) {
-			pVel /= cnt_pVel;
-			pVel = pVel * rule3Scale;
-		}
-
-		// - Clamp the speed change before putting the new speed in vel2
-		vel2[iSelf] = pCenter + pDist + pVel + vel1[iSelf];
-		vel2[iSelf] = glm::clamp(vel2[iSelf], -maxSpeed, maxSpeed);
-	}
-}
-
-__global__ void kernShuffleVelPosCoherent(
-	int N, int *particleArrayIndices,
-	glm::vec3 *pos, glm::vec3 *vel1,
-	glm::vec3 *pos_shuffle, glm::vec3 *vel1_shuffle) {
+glm::vec3 computeMeanCPU(int size, std::vector<glm::vec3>& Ybuffer_corr) {
 	
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
+	glm::vec3 mean(0.0f,0.0f,0.0f);
+	
+	for (int i = 0; i < size; i++) {
+		mean = mean + Ybuffer_corr[i];
+	}
 
-	if (iSelf < N) {
-		pos_shuffle[iSelf] = pos[particleArrayIndices[iSelf]];
-		vel1_shuffle[iSelf] = vel1[particleArrayIndices[iSelf]];
-		}
+	mean.x = mean.x / (1.0f * size);
+	mean.y = mean.y / (1.0f * size);
+	mean.z = mean.z / (1.0f * size);
+
+	return mean;
 }
 
-__global__ void kernUnShuffleVelPosCoherent(
-	int N, int *particleArrayIndices,
-	glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2_shuffle) {
-	
-	int iSelf = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-	if (iSelf < N) {
-		vel1[particleArrayIndices[iSelf]] = vel2_shuffle[iSelf];
+void vec3AddCPU(int size, glm::vec3 addConst, std::vector<glm::vec3>& old_buff, std::vector<glm::vec3>& new_buff) {
+	for (int i = 0; i < size; i++) {
+		new_buff[i] =  old_buff[i] + addConst;
 	}
 }
 
+void matmulCPU(int size, std::vector<glm::vec3>& Ybuffer_mean, std::vector<glm::vec3>& Xbuffer_mean, std::vector<glm::vec3>& Res) {
+	
+	// Dedicated matmul for 3xN - nx3 ==> 3x3
+	// Y - Nx3
+	// X - Nx3
+	// compute - Yt*X
+	
+	for (int i = 0; i < size; i++) {
+		
+		Res[0].x = Res[0].x + (Ybuffer_mean[i].x * Xbuffer_mean[i].x);
+		Res[0].y = Res[0].y + (Ybuffer_mean[i].x * Xbuffer_mean[i].y);
+		Res[0].z = Res[0].z + (Ybuffer_mean[i].x * Xbuffer_mean[i].z);
 
-/**
-* Step the entire N-body simulation by `dt` seconds.
-*/
-void Points::stepSimulationNaive(float dt) {
-	// TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
-	// Sequentially call both kernels
+		Res[1].x = Res[1].x + (Ybuffer_mean[i].y * Xbuffer_mean[i].x);
+		Res[1].y = Res[1].y + (Ybuffer_mean[i].y * Xbuffer_mean[i].y);
+		Res[1].z = Res[1].z + (Ybuffer_mean[i].y * Xbuffer_mean[i].z);
 
-	// Performace Measurment 
+		Res[2].x = Res[2].x + (Ybuffer_mean[i].z * Xbuffer_mean[i].x);
+		Res[2].y = Res[2].y + (Ybuffer_mean[i].z * Xbuffer_mean[i].y);
+		Res[2].z = Res[2].z + (Ybuffer_mean[i].z * Xbuffer_mean[i].z);
+	}
+}
+
+void matmulUVCPU(int size, std::vector<glm::vec3>& U, std::vector<glm::vec3>& V, std::vector<glm::vec3>& Rot) {
+
+		Rot[0].x = glm::dot(U[0],V[0]);  
+		Rot[0].y = glm::dot(U[0], V[1]); 
+		Rot[0].z = glm::dot(U[0], V[2]); 
+
+		Rot[1].x = glm::dot(U[1], V[0]); 
+		Rot[1].y = glm::dot(U[1], V[1]); 
+		Rot[1].z = glm::dot(U[1], V[2]); 
+
+		Rot[2].x = glm::dot(U[2], V[0]); 
+		Rot[2].y = glm::dot(U[2], V[1]); 
+		Rot[2].z = glm::dot(U[2], V[2]);  
+
+}
+
+void computeTransCPU(int size, glm::vec3 mean_x, glm::vec3 mean_y, std::vector< glm::vec3>& Rot, glm::vec3& Trans) {
+	
+	Trans.x = mean_y.x - glm::dot(Rot[0],mean_x); 
+	Trans.y = mean_y.y - glm::dot(Rot[1], mean_x);
+	Trans.z = mean_y.z - glm::dot(Rot[2], mean_x); 
+
+}
+
+void updateXCPU(std::vector< glm::vec3>& Rot, glm::vec3& Trans, std::vector< glm::vec3>& Xbuffer, int size) {
+
+	for (int i = 0; i < size; i++) {
+
+		Xbuffer[i] = Trans + glm::vec3(glm::dot(Rot[0], Xbuffer[i]), 
+									glm::dot(Rot[1], Xbuffer[i]), 
+									glm::dot(Rot[2], Xbuffer[i]));
+	}
+
+}
+
+void print3x3matrix(std::vector< glm::vec3>& Rot) {
+
+	std::cout << Rot[0].x << " " << Rot[0].y << " " << Rot[0].z << " " << std::endl;
+	std::cout << Rot[1].x << " " << Rot[1].y << " " << Rot[1].z << " " << std::endl;
+	std::cout << Rot[2].x << " " << Rot[2].y << " " << Rot[2].z << " " << std::endl;
+
+}
+
+void Points::stepSimulationICPNaive(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, float dt) {
+
+	// Performace Measurment
 	//cudaEventRecord(start);
+	
+	int Y = Ybuffer.size();
+	int X = Xbuffer.size();
 
-	dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+	numObjects = Y + X;
 
-	kernUpdateVelocityBruteForce <<< fullBlocksPerGrid, blockSize >>> (numObjects, dev_pos, dev_vel1, dev_vel2);
-	checkCUDAErrorWithLine("kernUpdateVelocityBruteForce failed!");
+	std::cout << "======= dt:" << dt << std::endl;
+	std::cout << "Finding Correspondences:" << std::endl;
 
-	kernUpdatePos<<< fullBlocksPerGrid, blockSize >>> (numObjects, dt, dev_pos, dev_vel2);
-	checkCUDAErrorWithLine("kernUpdatePos failed!");
+	std::vector<glm::vec3> Ybuffer_corr(X);
+	findCorrespondencesCPU(Y, X, Ybuffer_corr, Ybuffer, Xbuffer);
 
-	// TODO-1.2 ping-pong the velocity buffers
-	dev_vel1 = dev_vel2;
+	// Compute Mean
+	std::vector<glm::vec3> Ybuffer_mean(X);
+	std::vector<glm::vec3> Xbuffer_mean(X);
+	
+	glm::vec3 mean_y = computeMeanCPU(X, Ybuffer_corr);
+	glm::vec3 mean_x = computeMeanCPU(X, Xbuffer);
 
-	//// Performace Measurment 
+	std::cout << " X mean :"<< mean_x.x << " " << mean_x.y << " " << mean_x.z << std::endl;
+	std::cout << " Y mean :"<< mean_y.x << " " << mean_y.y << " " << mean_y.z << std::endl;
+
+	// Mean Center
+	vec3AddCPU(X, -1.0f * mean_x, Xbuffer, Xbuffer_mean);
+	vec3AddCPU(X, -1.0f * mean_y, Ybuffer_corr, Ybuffer_mean);
+
+	// Compute Yt*X 
+	std::vector<glm::vec3> YtX(3);
+	matmulCPU(X, Ybuffer_mean, Xbuffer_mean, YtX);
+	
+	std::cout << "YtX Matrix \n";
+	print3x3matrix(YtX);
+
+
+	// compute SVD of Yt X
+	std::vector<glm::vec3> Rot(3, glm::vec3(0.0f, 0.0f, 0.0f));
+	glm::vec3 Trans;
+	
+	std::vector<glm::vec3> U(3, glm::vec3(0.0f, 0.0f, 0.0f));
+	std::vector<glm::vec3> S(3,glm::vec3(0.0f,0.0f,0.0f));
+	std::vector<glm::vec3> V(3, glm::vec3(0.0f, 0.0f, 0.0f));
+
+	// compute SVD
+	svd(YtX[0].x, YtX[0].y, YtX[0].z,
+		YtX[1].x, YtX[1].y, YtX[1].z,
+		YtX[2].x, YtX[2].y, YtX[2].z,
+		
+		U[0].x, U[0].y, U[0].z,
+		U[1].x, U[1].y, U[1].z,
+		U[2].x, U[2].y, U[2].z,
+		
+		S[0].x, S[0].y, S[0].z,
+		S[1].x, S[1].y, S[1].z,
+		S[2].x, S[2].y, S[2].z,
+		
+		V[0].x, V[0].y, V[0].z,
+		V[1].x, V[1].y, V[1].z,
+		V[2].x, V[2].y, V[2].z);
+	
+	std::cout << "U Matrix \n";
+	print3x3matrix(U);
+
+	std::cout << "V Matrix \n";
+	print3x3matrix(V);
+
+	// Compute Rotation U.VT
+	matmulUVCPU(3, U, V, Rot);
+	std::cout << "Rotation Matrix \n";
+	print3x3matrix(Rot);
+
+	// Compute Translation T = Y_mean - R*Xmean
+	computeTransCPU(3, mean_x, mean_y, Rot, Trans);
+
+	std::cout << "Translation \n";
+	std::cout << Trans.x << " " << Trans.y << " " << Trans.z << " " << std::endl;
+
+	//Compute new X points based on Rot and trans
+	updateXCPU(Rot, Trans, Xbuffer, X);
+
+	std::cout << "Updated X \n";
+	std::cout << Xbuffer[0].x << " " << Xbuffer[0].y << " " << Xbuffer[0].z << " " << std::endl;
+
+	//Render 
+	cudaMemcpy(&dev_pos[Y], &Xbuffer[0], Xbuffer.size()*sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	
+	//// Performace Measurment
 	//cudaEventRecord(stop);
-
 	//cudaEventSynchronize(stop);
-
 	//float mills = 0.0;
 	//cudaEventElapsedTime(&mills, start, stop);
-
 	//// Running Average
 	//milliseconds = (milliseccnts*milliseconds + mills) / (milliseccnts + 1);
 	//printf("Running Avg Time in milisecond Naive = %f \n", milliseconds);
+}
+
+
+// //===================================
+// //==============GPU==================
+// //===================================
+
+
+void Points::initGPU(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer) {
+	
+	int Y = Ybuffer.size();
+	int X = Xbuffer.size();
+
+	numObjects = Y + X;
+
+	// Bring data to GPU
+	std::cout << "Setting up gpu buffers ";
+	cudaMalloc((void**)&dev_Ybuffer, Y * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_Y failed!");
+
+	cudaMalloc((void**)&dev_Xbuffer, X * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_X failed!");
+	std::cout << "...";
+
+	cudaMemcpy(dev_Ybuffer, &Ybuffer[0], Ybuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	cudaMemcpy(dev_Xbuffer, &Xbuffer[0], Xbuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy failed!");
+
+	cudaMalloc((void**)&dev_YbufferCorr, X*sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_YbufferCorr failed!");
+
+	cudaMalloc((void**)& dev_intermMats, X*sizeof(glm::mat3));
+	checkCUDAErrorWithLine("cudaMalloc dev_intermMats failed!");
+
+	cudaMalloc((void**)& dev_matrix1, sizeof(glm::mat3));
+	checkCUDAErrorWithLine("cudaMalloc dev_matrix1 failed!");
+
+	cudaMalloc((void**)& dev_matrix2, sizeof(glm::mat3));
+	checkCUDAErrorWithLine("cudaMalloc dev_matrix1 failed!");
+
+	cudaMalloc((void**)& dev_matrix3, sizeof(glm::mat3));
+	checkCUDAErrorWithLine("cudaMalloc dev_matrix1 failed!");
+
+	std::cout <<"Finished." << std::endl;
 
 }
 
-void Points::stepSimulationScatteredGrid(float dt) {
-	// TODO-2.1
-	// Uniform Grid Neighbor search using Thrust sort.
-	// In Parallel:
-	// - label each particle with its array index as well as its grid index.
-	// - Unstable key sort using Thrust. 
-	// Wrap device vectors in thrust iterators for use with thrust.
-	// - Naively unroll the loop for finding the start and end indices of each
-	//   cell's data pointers in the array of point indices
 
-	// Performace Measurment 
-	// cudaEventRecord(start);
+__global__ void kernFindCorrespondences(int X, int Y, glm::vec3 *Xbuffer, glm::vec3 *Ybuffer, glm::vec3 *Ybuffer_corr) {
 
-	int N = numObjects;
-
-	dim3 fullBlocksPerGrid((N + blockSize - 1) / blockSize);
-	dim3 cellBlocks((gridCellCount + blockSize - 1) / blockSize);
+	int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	
-	kernResetIntBuffer << < cellBlocks, blockSize >> > (gridCellCount, dev_gridCellStartIndices, -1);
-	checkCUDAErrorWithLine("kernResetIntBuffer for dev_gridCellStartIndices failed!");
+	if (idx < X) {
+		
+		Ybuffer_corr[idx] = glm::vec3(0.0f, 0.0f, 0.0f);
+		float dist = glm::distance(Ybuffer[0], Xbuffer[idx]);
 
-	kernResetIntBuffer << < cellBlocks, blockSize >> > (gridCellCount, dev_gridCellEndIndices, -1);
-	checkCUDAErrorWithLine("kernResetIntBuffer for dev_gridCellEndIndices failed!");
+		for (int y = 1; y < Y; y++) {
 
-	kernComputeIndices <<< fullBlocksPerGrid, blockSize >>> (N, gridSideCount, gridMinimum, gridInverseCellWidth, 
-		dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
-	checkCUDAErrorWithLine("kernComputeIndices failed!");
+			float d = glm::distance(Ybuffer[y], Xbuffer[idx]);
 
-	thrust::sort_by_key(dev_thrust_particleGridIndices, dev_thrust_particleGridIndices + N, dev_thrust_particleArrayIndices);
+			if (dist > d) {
+				dist = d;
+				Ybuffer_corr[idx] = Ybuffer[y];
+			}
+		
+		}
+		if(idx==0)printf("CCorr %f %f %f", Ybuffer_corr[0].x, Ybuffer_corr[0].y, Ybuffer_corr[0].z);
+	}
+}
+
+
+// Matrix Transpose
+__global__ void kernMatrixTranspose(int rows, int cols, float *matrix, float *matrix_T) {
+
+	int idy = blockIdx.y * blockDim.y + threadIdx.y;
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (idx < cols && idy < rows) {
+		int pos = idy * cols + idx;
+		int tpos = idx * rows + idy;
+
+		matrix_T[tpos] = matrix[pos];
+	}
+}
+
+
+// kernel to to matmul // A mxn // B nxk // C mxk
+__global__ void kernMatrixMultiply(const float *dev_A, const float *dev_B, float *dev_C, int m, int n, int k) {
+
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
+	int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+	float sum = 0;
+	if (col < k && row < m)
+	{
+		for (int i = 0; i < n; i++)
+			sum += dev_A[row * n + i] * dev_B[i * k + col];
+		dev_C[row * k + col] = sum;
+	}
+}
+
+__global__ void kernOuterProd(int X, glm::vec3 *dev_Xbuffer, glm::vec3 *dev_YbufferCorr, glm::mat3 *dev_intermMats) {
+
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= X) return;
 	
-	kernIdentifyCellStartEnd <<< fullBlocksPerGrid, blockSize >> > (N, dev_particleGridIndices, 
-		dev_gridCellStartIndices, dev_gridCellEndIndices);
-	checkCUDAErrorWithLine("kernIdentifyCellStartEnd failed!");
+	dev_intermMats[idx] = glm::outerProduct(dev_YbufferCorr[idx], dev_Xbuffer[idx]);
+}
 
-	kernUpdateVelNeighborSearchScattered <<< fullBlocksPerGrid, blockSize >> > (N, gridSideCount, gridMinimum,
-		gridInverseCellWidth, gridCellWidth,
-		dev_gridCellStartIndices, dev_gridCellEndIndices, 
-		dev_particleArrayIndices, dev_pos, dev_vel1, dev_vel2);
-	checkCUDAErrorWithLine("kernUpdateVelNeighborSearchScattered failed!");
 
-	kernUpdatePos << < fullBlocksPerGrid, blockSize >> > (N, dt, dev_pos, dev_vel2);
-	checkCUDAErrorWithLine("kernUpdatePos failed!");
+void Points::stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, float dt) {
 
-	dev_vel1 = dev_vel2;
+	int Y = Ybuffer.size();
+	int X = Xbuffer.size();
 
-	// Performace Measurment 
-	//cudaEventRecord(stop);
+	dim3 fullBlocksPerGrid((X + blockSize - 1) / blockSize);
 
-	//cudaEventSynchronize(stop);
 
-	//float mills = 0.0;
-	//cudaEventElapsedTime(&mills, start, stop);
+	// Performace Measurment
+	//cudaEventRecord(start);
 
+	//Find Correspondences
+	std::cout << "Computing Correspondances.\n";
+	kernFindCorrespondences << <fullBlocksPerGrid, blockSize >> > (X, Y, dev_Xbuffer, dev_Ybuffer, dev_YbufferCorr);
+		
+	// Compute YtX
+	std::cout << "Computing kernOuterProd \n";
+	// ELement wise outer product
+	kernOuterProd <<<fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer, dev_YbufferCorr, dev_intermMats);
+	std::cout << "Computing thrust::reduce \n";
+
+	//Reduction using Thrust
+	glm::mat3 YtX = thrust::reduce(thrust::device, dev_intermMats, dev_intermMats + X, glm::mat3(0.0f));
+	
+	std::cout << "Matrix YtX\n";
+	std::cout << YtX[0][0] << " " << YtX[0][1] << " " << YtX[0][2] << "\n"
+			  << YtX[1][0] << " " << YtX[1][1] << " " << YtX[1][2] << "\n"
+			  << YtX[2][0] << " " << YtX[2][1] << " " << YtX[2][2] << "\n";
+	
+	cudaMemcpy(&dev_matrix1, &YtX, sizeof(glm::mat3), cudaMemcpyHostToDevice);
+
+
+	//compute Mean
+
+
+	// MeanCenter Data
+
+
+	// OCMpute SVD(YtX)
+
+
+	//Compute R = UVt
+
+
+	//compute T = Ymean =RXmean
+
+
+	//// Performace Measurment
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	float mills = 0.0;
+	cudaEventElapsedTime(&mills, start, stop);
 	// Running Average
 	//milliseconds = (milliseccnts*milliseconds + mills) / (milliseccnts + 1);
-	//if(milliseccnts%10000==0) printf("Time in milisecond Scattered = %f \n", mills);
-}
+	printf("Points::stepSimulationGPUNaive | Time-milisecond = %f \n", mills);
 
-void Points::stepSimulationCoherentGrid(float dt) {
-	// TODO-2.3 - start by copying Points::stepSimulationNaiveGrid
-  
-	// Uniform Grid Neighbor search using Thrust sort on cell-coherent data.
-  
-	// In Parallel:
-	// - Label each particle with its array index as well as its grid index.
-	//   Use 2x width grids
-	// - Unstable key sort using Thrust. A stable sort isn't necessary, but you
-	//   are welcome to do a performance comparison.
-	// - Naively unroll the loop for finding the start and end indices of each
-	//   cell's data pointers in the array of point indices
-	// - BIG DIFFERENCE: use the rearranged array index buffer to reshuffle all
-	//   the particle data in the simulation array.
-	//   CONSIDER WHAT ADDITIONAL BUFFERS YOU NEED
-	// - Perform velocity updates using neighbor search
-	// - Update positions
-	// - Ping-pong buffers as needed. THIS MAY BE DIFFERENT FROM BEFORE.
-	
-	int N = numObjects;
-
-	dim3 fullBlocksPerGrid((N + blockSize - 1) / blockSize);
-	dim3 cellBlocks((gridCellCount + blockSize - 1) / blockSize);
-
-	// Performace Measurment 
-	//cudaEventRecord(start);
-	//printf("fullBlocksPerGrid %d \n", ((N + blockSize - 1) / blockSize));
-	//printf("blockSize		  %d \n", blockSize);
-
-
-	kernResetIntBuffer << < cellBlocks, blockSize >> > (gridCellCount, dev_gridCellStartIndices, -1);
-	checkCUDAErrorWithLine("kernResetIntBuffer for dev_gridCellStartIndices failed!");
-
-	kernResetIntBuffer << < cellBlocks, blockSize >> > (gridCellCount, dev_gridCellEndIndices, -1);
-	checkCUDAErrorWithLine("kernResetIntBuffer for dev_gridCellEndIndices failed!");
-
-	kernComputeIndices << < fullBlocksPerGrid, blockSize >> > (N, gridSideCount, gridMinimum, gridInverseCellWidth,
-		dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
-	checkCUDAErrorWithLine("kernComputeIndices failed!");
-
-	thrust::sort_by_key(dev_thrust_particleGridIndices, dev_thrust_particleGridIndices + N, dev_thrust_particleArrayIndices);
-
-	kernShuffleVelPosCoherent <<< fullBlocksPerGrid, blockSize >>> (N, dev_particleArrayIndices,
-			dev_pos, dev_vel1, dev_pos_shuffle, dev_vel1_shuffle);
-
-	kernIdentifyCellStartEnd << < fullBlocksPerGrid, blockSize >> > (N, dev_particleGridIndices,
-		dev_gridCellStartIndices, dev_gridCellEndIndices);
-	checkCUDAErrorWithLine("kernIdentifyCellStartEnd failed!");
-
-	kernUpdateVelNeighborSearchCoherent <<< fullBlocksPerGrid, blockSize >> > (N, gridSideCount, gridMinimum,
-		gridInverseCellWidth, gridCellWidth,
-		dev_gridCellStartIndices, dev_gridCellEndIndices,
-		dev_pos_shuffle, dev_vel1_shuffle, dev_vel2);
-	checkCUDAErrorWithLine("kernUpdateVelNeighborSearchScattered failed!");
-
-	kernUnShuffleVelPosCoherent<<<fullBlocksPerGrid, blockSize >>> (N, dev_particleArrayIndices,
-		dev_pos, dev_vel1, dev_vel2);
-
-	kernUpdatePos << < fullBlocksPerGrid, blockSize >> > (N, dt, dev_pos, dev_vel1);
-	checkCUDAErrorWithLine("kernUpdatePos failed!");
-
-	//// Performace Measurment 
-	//cudaEventRecord(stop);
-
-	//cudaEventSynchronize(stop);
-
-	//float mills= 0.0;
-	//cudaEventElapsedTime(&mills, start, stop);
-	//
-	//// Running Average
-	//milliseconds = (milliseccnts*milliseconds + mills)/( milliseccnts + 1);
-	//printf("Running Avg Time in milisecond Coherent = %f \n", milliseconds);
+	//render
+	cudaMemcpy(&dev_pos[Ybuffer.size()], &Xbuffer[0], Xbuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	cudaThreadSynchronize();
 }
 
 void Points::endSimulation() {
-  cudaFree(dev_vel1);
-  cudaFree(dev_vel2);
-  cudaFree(dev_pos);
+	cudaFree(dev_col);
+	cudaFree(dev_Ybuffer);
+	cudaFree(dev_Xbuffer);
+	cudaFree(dev_YbufferCorr);
+	cudaFree(dev_pos);
+	cudaFree(dev_intermMats);
+	cudaFree(dev_matrix1);
+	cudaFree(dev_matrix2);
+	cudaFree(dev_matrix3);
 
-  // TODO-2.1 TODO-2.3 - Free any additional buffers here.
-  // cleanup
-  cudaFree(dev_particleArrayIndices);
-  cudaFree(dev_particleGridIndices);
-  cudaFree(dev_gridCellStartIndices);
-  cudaFree(dev_gridCellEndIndices);
-  cudaFree(dev_pos_shuffle);
-  cudaFree(dev_vel1_shuffle);
-  checkCUDAErrorWithLine("cudaFree failed!");
+
+	checkCUDAErrorWithLine("cudaFree failed!");
 }
 
 void Points::unitTest() {
-  // LOOK-1.2 Feel free to write additional tests here.
-  // test unstable sort
-  int *dev_intKeys;
-  int *dev_intValues;
-  int N = 10;
+	// LOOK-1.2 Feel free to write additional tests here.
+	// test unstable sort
+	int *dev_intKeys;
+	int *dev_intValues;
+	int N = 10;
 
-  std::unique_ptr<int[]>intKeys{ new int[N] };
-  std::unique_ptr<int[]>intValues{ new int[N] };
+	std::unique_ptr<int[]>intKeys{ new int[N] };
+	std::unique_ptr<int[]>intValues{ new int[N] };
 
-  intKeys[0] = 0; intValues[0] = 0;
-  intKeys[1] = 1; intValues[1] = 1;
-  intKeys[2] = 0; intValues[2] = 2;
-  intKeys[3] = 3; intValues[3] = 3;
-  intKeys[4] = 0; intValues[4] = 4;
-  intKeys[5] = 2; intValues[5] = 5;
-  intKeys[6] = 2; intValues[6] = 6;
-  intKeys[7] = 0; intValues[7] = 7;
-  intKeys[8] = 5; intValues[8] = 8;
-  intKeys[9] = 6; intValues[9] = 9;
+	intKeys[0] = 0; intValues[0] = 0;
+	intKeys[1] = 1; intValues[1] = 1;
+	intKeys[2] = 0; intValues[2] = 2;
+	intKeys[3] = 3; intValues[3] = 3;
+	intKeys[4] = 0; intValues[4] = 4;
+	intKeys[5] = 2; intValues[5] = 5;
+	intKeys[6] = 2; intValues[6] = 6;
+	intKeys[7] = 0; intValues[7] = 7;
+	intKeys[8] = 5; intValues[8] = 8;
+	intKeys[9] = 6; intValues[9] = 9;
 
-  cudaMalloc((void**)&dev_intKeys, N * sizeof(int));
-  checkCUDAErrorWithLine("cudaMalloc dev_intKeys failed!");
+	cudaMalloc((void**)&dev_intKeys, N * sizeof(int));
+	checkCUDAErrorWithLine("cudaMalloc dev_intKeys failed!");
 
-  cudaMalloc((void**)&dev_intValues, N * sizeof(int));
-  checkCUDAErrorWithLine("cudaMalloc dev_intValues failed!");
+	cudaMalloc((void**)&dev_intValues, N * sizeof(int));
+	checkCUDAErrorWithLine("cudaMalloc dev_intValues failed!");
 
-  dim3 fullBlocksPerGrid((N + blockSize - 1) / blockSize);
+	dim3 fullBlocksPerGrid((N + blockSize - 1) / blockSize);
 
-  std::cout << "before unstable sort: " << std::endl;
-  for (int i = 0; i < N; i++) {
-    std::cout << "  key: " << intKeys[i];
-    std::cout << " value: " << intValues[i] << std::endl;
-  }
+	std::cout << "before unstable sort: " << std::endl;
+	for (int i = 0; i < N; i++) {
+		std::cout << "  key: " << intKeys[i];
+		std::cout << " value: " << intValues[i] << std::endl;
+	}
 
-  // How to copy data to the GPU
-  cudaMemcpy(dev_intKeys, intKeys.get(), sizeof(int) * N, cudaMemcpyHostToDevice);
-  cudaMemcpy(dev_intValues, intValues.get(), sizeof(int) * N, cudaMemcpyHostToDevice);
+	// How to copy data to the GPU
+	cudaMemcpy(dev_intKeys, intKeys.get(), sizeof(int) * N, cudaMemcpyHostToDevice);
+	cudaMemcpy(dev_intValues, intValues.get(), sizeof(int) * N, cudaMemcpyHostToDevice);
 
-  // Wrap device vectors in thrust iterators for use with thrust.
-  thrust::device_ptr<int> dev_thrust_keys(dev_intKeys);
-  thrust::device_ptr<int> dev_thrust_values(dev_intValues);
+	// Wrap device vectors in thrust iterators for use with thrust.
+	thrust::device_ptr<int> dev_thrust_keys(dev_intKeys);
+	thrust::device_ptr<int> dev_thrust_values(dev_intValues);
 
-  // LOOK-2.1 Example for using thrust::sort_by_key
-  thrust::sort_by_key(dev_thrust_keys, dev_thrust_keys + N, dev_thrust_values);
+	// LOOK-2.1 Example for using thrust::sort_by_key
+	thrust::sort_by_key(dev_thrust_keys, dev_thrust_keys + N, dev_thrust_values);
 
-  // How to copy data back to the CPU side from the GPU
-  cudaMemcpy(intKeys.get(), dev_intKeys, sizeof(int) * N, cudaMemcpyDeviceToHost);
-  cudaMemcpy(intValues.get(), dev_intValues, sizeof(int) * N, cudaMemcpyDeviceToHost);
-  checkCUDAErrorWithLine("memcpy back failed!");
+	// How to copy data back to the CPU side from the GPU
+	cudaMemcpy(intKeys.get(), dev_intKeys, sizeof(int) * N, cudaMemcpyDeviceToHost);
+	cudaMemcpy(intValues.get(), dev_intValues, sizeof(int) * N, cudaMemcpyDeviceToHost);
+	checkCUDAErrorWithLine("memcpy back failed!");
 
-  std::cout << "after unstable sort: " << std::endl;
-  for (int i = 0; i < N; i++) {
-    std::cout << "  key: " << intKeys[i];
-    std::cout << " value: " << intValues[i] << std::endl;
-  }
+	std::cout << "after unstable sort: " << std::endl;
+	for (int i = 0; i < N; i++) {
+		std::cout << "  key: " << intKeys[i];
+		std::cout << " value: " << intValues[i] << std::endl;
+	}
 
-  // cleanup
-  cudaFree(dev_intKeys);
-  cudaFree(dev_intValues);
-  checkCUDAErrorWithLine("cudaFree failed!");
-  return;
+	// cleanup
+	cudaFree(dev_intKeys);
+	cudaFree(dev_intValues);
+	checkCUDAErrorWithLine("cudaFree failed!");
+	return;
 }

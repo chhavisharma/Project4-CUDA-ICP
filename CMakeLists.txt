@@ -70,6 +70,7 @@ set(headers
     src/kernel.h
     src/main.hpp
     src/utilityCore.hpp
+    src/svd3.h
     )
 
 set(sources
