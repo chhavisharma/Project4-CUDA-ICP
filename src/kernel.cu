@@ -610,12 +610,12 @@ void Points::stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector
 
 	//Compute R = UVt
 	Rot = U * glm::transpose(V);
-	/*
+	
 	std::cout << "Matrix Rotation \n";
 	std::cout << Rot[0][0] << " " << Rot[1][0] << " " << Rot[2][0] << "\n"
 			  << Rot[0][1] << " " << Rot[1][1] << " " << Rot[2][1] << "\n"
 			  << Rot[0][2] << " " << Rot[1][2] << " " << Rot[2][2] << "\n";
-	*/
+	
 	//compute T = Ymean =RXmean
 	Trans = Y_mean - (Rot * X_mean) ;
 	/*

@@ -94,7 +94,7 @@ int main(int argc, char* argv[]) {
 	read_data(Ybuffer, argv[1], 0.0000000000f);
 
 	std::cout << "Data File X(source): " << argv[2] << std::endl;
-	read_data(Xbuffer, argv[2], 1.0000000000f);
+	read_data(Xbuffer, argv[2], 0.0000000000f);
 
 	// Initialize drawing state
 	N_FOR_VIS = Ybuffer.size() + Xbuffer.size();
