@@ -46,7 +46,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 #define blockSize 512
 
 /*! Size of the starting area in simulation space. */
-#define scene_scale 0.10f
+#define scene_scale 0.050f
 
 /***********************************************
 * Kernel state (pointers are device pointers) *
@@ -63,13 +63,8 @@ glm::vec3 *dev_Ybuffer;
 glm::vec3 *dev_Xbuffer;
 glm::vec3 *dev_YbufferCorr;
 glm::mat3 *dev_intermMats;
-
-glm::mat3 *dev_matrix1;
-glm::mat3 *dev_matrix2;
-glm::mat3 *dev_matrix3;
-
-
-
+glm::vec3 *dev_Ybuffer_m;
+glm::vec3 *dev_Xbuffer_m;
 
 cudaEvent_t start, stop;
 
@@ -115,7 +110,7 @@ void Points::initCpuICP(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&
 	cudaMemcpy(&dev_pos[Ybuffer.size()], &Xbuffer[0], Xbuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
 
 	kernResetVec3Buffer << <dim3((Y + blockSize - 1) / blockSize), blockSize >> > (Y, dev_col, glm::vec3(1, 1, 1));
-	kernResetVec3Buffer << <dim3((X + blockSize - 1) / blockSize), blockSize >> > (X, &dev_col[Y], glm::vec3(0, 1, 0));
+	kernResetVec3Buffer << <dim3((X + blockSize - 1) / blockSize), blockSize >> > (X, &dev_col[Y], glm::vec3(1, 0, 0));
 
 	cudaThreadSynchronize();
 }
@@ -324,6 +319,9 @@ void Points::stepSimulationICPNaive(std::vector<glm::vec3> &Ybuffer, std::vector
 	std::vector<glm::vec3> Ybuffer_corr(X);
 	findCorrespondencesCPU(Y, X, Ybuffer_corr, Ybuffer, Xbuffer);
 
+	std::cout << " Y coor 0 :" << Ybuffer_corr[0].x << " " << Ybuffer_corr[0].y << " " << Ybuffer_corr[0].z << std::endl;
+	std::cout << " Y corr X :" << Ybuffer_corr[X-1].x << " " << Ybuffer_corr[X-1].y << " " << Ybuffer_corr[X-1].z << std::endl;
+	
 	// Compute Mean
 	std::vector<glm::vec3> Ybuffer_mean(X);
 	std::vector<glm::vec3> Xbuffer_mean(X);
@@ -397,6 +395,7 @@ void Points::stepSimulationICPNaive(std::vector<glm::vec3> &Ybuffer, std::vector
 	//Render 
 	cudaMemcpy(&dev_pos[Y], &Xbuffer[0], Xbuffer.size()*sizeof(glm::vec3), cudaMemcpyHostToDevice);
 	
+	cudaThreadSynchronize();
 	//// Performace Measurment
 	//cudaEventRecord(stop);
 	//cudaEventSynchronize(stop);
@@ -431,7 +430,7 @@ void Points::initGPU(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbu
 
 	cudaMemcpy(dev_Ybuffer, &Ybuffer[0], Ybuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
 	cudaMemcpy(dev_Xbuffer, &Xbuffer[0], Xbuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
-	checkCUDAErrorWithLine("cudaMemcopy failed!");
+	checkCUDAErrorWithLine("cudaMemcopy Xbuffer Ybuffer failed!");
 
 	cudaMalloc((void**)&dev_YbufferCorr, X*sizeof(glm::vec3));
 	checkCUDAErrorWithLine("cudaMalloc dev_YbufferCorr failed!");
@@ -439,17 +438,14 @@ void Points::initGPU(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbu
 	cudaMalloc((void**)& dev_intermMats, X*sizeof(glm::mat3));
 	checkCUDAErrorWithLine("cudaMalloc dev_intermMats failed!");
 
-	cudaMalloc((void**)& dev_matrix1, sizeof(glm::mat3));
-	checkCUDAErrorWithLine("cudaMalloc dev_matrix1 failed!");
+	cudaMalloc((void**)&dev_Ybuffer_m, X * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_Y failed!");
 
-	cudaMalloc((void**)& dev_matrix2, sizeof(glm::mat3));
-	checkCUDAErrorWithLine("cudaMalloc dev_matrix1 failed!");
-
-	cudaMalloc((void**)& dev_matrix3, sizeof(glm::mat3));
-	checkCUDAErrorWithLine("cudaMalloc dev_matrix1 failed!");
+	cudaMalloc((void**)&dev_Xbuffer_m, X * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_X failed!");
 
 	std::cout <<"Finished." << std::endl;
-
+	cudaThreadSynchronize();
 }
 
 
@@ -472,7 +468,7 @@ __global__ void kernFindCorrespondences(int X, int Y, glm::vec3 *Xbuffer, glm::v
 			}
 		
 		}
-		if(idx==0)printf("CCorr %f %f %f", Ybuffer_corr[0].x, Ybuffer_corr[0].y, Ybuffer_corr[0].z);
+		//if(idx==0 || idx==X-1)printf("%d CCorr %f %f %f", idx, Ybuffer_corr[idx].x, Ybuffer_corr[idx].y, Ybuffer_corr[idx].z);
 	}
 }
 
@@ -512,9 +508,28 @@ __global__ void kernOuterProd(int X, glm::vec3 *dev_Xbuffer, glm::vec3 *dev_Ybuf
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (idx >= X) return;
 	
-	dev_intermMats[idx] = glm::outerProduct(dev_YbufferCorr[idx], dev_Xbuffer[idx]);
+	dev_intermMats[idx] = glm::outerProduct( dev_YbufferCorr[idx], dev_Xbuffer[idx]);
 }
 
+
+__global__ void kernMeanCenter(int X, glm::vec3 *dev_buffer, glm::vec3 *dev_buffer_m, glm::vec3 mean) {
+
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= X) return;
+
+	dev_buffer_m[idx] = dev_buffer[idx] - mean;
+}
+
+__global__ void kernRotTransPoints(int X, glm::vec3 * dev_Xbuffer, glm::mat3 Rot, glm::vec3 Trans) {
+
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= X) return;
+
+	dev_Xbuffer[idx] = Trans + glm::vec3(glm::dot(glm::vec3(Rot[0][0], Rot[1][0], Rot[2][0]), dev_Xbuffer[idx]),
+									glm::dot(glm::vec3(Rot[0][1], Rot[1][1], Rot[2][1]), dev_Xbuffer[idx]),
+									glm::dot(glm::vec3(Rot[0][2], Rot[1][2], Rot[2][2]), dev_Xbuffer[idx]));
+
+}
 
 void Points::stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, float dt) {
 
@@ -525,69 +540,126 @@ void Points::stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector
 
 
 	// Performace Measurment
-	//cudaEventRecord(start);
+	// cudaEventCreate(&start);
 
 	//Find Correspondences
-	std::cout << "Computing Correspondances.\n";
+	//std::cout << "Computing Correspondances.\n";
 	kernFindCorrespondences << <fullBlocksPerGrid, blockSize >> > (X, Y, dev_Xbuffer, dev_Ybuffer, dev_YbufferCorr);
-		
+	cudaThreadSynchronize();
+
+	//compute Mean
+	glm::vec3 X_mean = thrust::reduce(thrust::device, dev_Xbuffer, dev_Xbuffer + X, glm::vec3(0.0f));
+	glm::vec3 Y_mean = thrust::reduce(thrust::device, dev_YbufferCorr, dev_YbufferCorr + X, glm::vec3(0.0f));
+	
+	X_mean = X_mean / (1.0f * X);
+	Y_mean = Y_mean / (1.0f * X);
+
+	//std::cout << " X mean :" << X_mean.x << " " << X_mean.y << " " << X_mean.z << std::endl;
+	//std::cout << " Y mean :" << Y_mean.x << " " << Y_mean.y << " " << Y_mean.z << std::endl;
+
+	// MeanCenter Data
+	kernMeanCenter << < fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer, dev_Xbuffer_m, X_mean);
+	kernMeanCenter << < fullBlocksPerGrid, blockSize >> > (X, dev_YbufferCorr, dev_Ybuffer_m, Y_mean);
+	cudaThreadSynchronize();
+
 	// Compute YtX
-	std::cout << "Computing kernOuterProd \n";
+	//std::cout << "Computing kernOuterProd \n";
+
 	// ELement wise outer product
-	kernOuterProd <<<fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer, dev_YbufferCorr, dev_intermMats);
-	std::cout << "Computing thrust::reduce \n";
+	kernOuterProd << <fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer_m, dev_Ybuffer_m, dev_intermMats);
+	//std::cout << "Computing thrust::reduce \n";
+	cudaThreadSynchronize();
 
 	//Reduction using Thrust
 	glm::mat3 YtX = thrust::reduce(thrust::device, dev_intermMats, dev_intermMats + X, glm::mat3(0.0f));
+
 	
-	std::cout << "Matrix YtX\n";
-	std::cout << YtX[0][0] << " " << YtX[0][1] << " " << YtX[0][2] << "\n"
-			  << YtX[1][0] << " " << YtX[1][1] << " " << YtX[1][2] << "\n"
-			  << YtX[2][0] << " " << YtX[2][1] << " " << YtX[2][2] << "\n";
+	//std::cout << "Matrix YtX\n";
+	//std::cout << YtX[0][0] << " " << YtX[1][0] << " " << YtX[2][0] << "\n"
+			 // << YtX[0][1] << " " << YtX[1][1] << " " << YtX[2][1] << "\n"
+			 // << YtX[0][2] << " " << YtX[1][2] << " " << YtX[2][2] << "\n";
 	
-	cudaMemcpy(&dev_matrix1, &YtX, sizeof(glm::mat3), cudaMemcpyHostToDevice);
 
+	//cudaMemcpy(&dev_matrix1, &YtX, sizeof(glm::mat3), cudaMemcpyHostToDevice);
 
-	//compute Mean
+	// ComputeMpute SVD(YtX)
+	glm::mat3 Rot(0.0f);
+	glm::vec3 Trans(0.0f);
 
+	glm::mat3 U(0.0f);
+	glm::mat3 S(0.0f);
+	glm::mat3 V(0.0f);
 
-	// MeanCenter Data
+	// compute SVD
 
+	svd(YtX[0][0], YtX[1][0], YtX[2][0],
+		YtX[0][1], YtX[1][1], YtX[2][1],
+		YtX[0][2], YtX[1][2], YtX[2][2],
 
-	// OCMpute SVD(YtX)
+		U[0][0], U[1][0], U[2][0],
+		U[0][1], U[1][1], U[2][1],
+		U[0][2], U[1][2], U[2][2],
 
+		S[0][0], S[1][0], S[2][0],
+		S[0][1], S[1][1], S[2][1],
+		S[0][2], S[1][2], S[2][2],
+
+		V[0][0], V[1][0], V[2][0],
+		V[0][1], V[1][1], V[2][1],
+		V[0][2], V[1][2], V[2][2] );
 
 	//Compute R = UVt
-
-
+	Rot = U * glm::transpose(V);
+	/*
+	std::cout << "Matrix Rotation \n";
+	std::cout << Rot[0][0] << " " << Rot[1][0] << " " << Rot[2][0] << "\n"
+			  << Rot[0][1] << " " << Rot[1][1] << " " << Rot[2][1] << "\n"
+			  << Rot[0][2] << " " << Rot[1][2] << " " << Rot[2][2] << "\n";
+	*/
 	//compute T = Ymean =RXmean
+	Trans = Y_mean - (Rot * X_mean) ;
+	/*
+	std::cout << "Trans \n";
+	std::cout << Trans.x << " " << Trans.y << " " << Trans.z << " " << std::endl;
+	*/
+	// Update dev_Xbuffer
+	kernRotTransPoints <<< fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer, Rot, Trans); //RX + T
+	cudaThreadSynchronize();
 
+
+	glm::vec3 Xbuff(0.0f);
+	cudaMemcpy(&Xbuff, &dev_Xbuffer[0], sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+	checkCUDAErrorWithLine("cudaMemcopy Xbuff failed!");
+	
+	/*
+	std::cout << "Updated X \n";
+	std::cout << Xbuff.x << " " << Xbuff.y << " " << Xbuff.z << " " << std::endl;
+	*/
+
+
+	//render
+	cudaMemcpy(&dev_pos[Y], &dev_Xbuffer[0], X * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy Xbuff failed!");
+	cudaThreadSynchronize();
 
 	//// Performace Measurment
-	cudaEventRecord(stop);
+	/*cudaEventRecord(stop);
 	cudaEventSynchronize(stop);
 	float mills = 0.0;
 	cudaEventElapsedTime(&mills, start, stop);
-	// Running Average
-	//milliseconds = (milliseccnts*milliseconds + mills) / (milliseccnts + 1);
 	printf("Points::stepSimulationGPUNaive | Time-milisecond = %f \n", mills);
-
-	//render
-	cudaMemcpy(&dev_pos[Ybuffer.size()], &Xbuffer[0], Xbuffer.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
-	cudaThreadSynchronize();
+*/
 }
 
 void Points::endSimulation() {
 	cudaFree(dev_col);
 	cudaFree(dev_Ybuffer);
 	cudaFree(dev_Xbuffer);
+	cudaFree(dev_Xbuffer_m);
+	cudaFree(dev_Ybuffer_m);
 	cudaFree(dev_YbufferCorr);
 	cudaFree(dev_pos);
 	cudaFree(dev_intermMats);
-	cudaFree(dev_matrix1);
-	cudaFree(dev_matrix2);
-	cudaFree(dev_matrix3);
-
 
 	checkCUDAErrorWithLine("cudaFree failed!");
 }
