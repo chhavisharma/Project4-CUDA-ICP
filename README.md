@@ -1,4 +1,4 @@
-CUDA Iterative Closest Points
+CUDA Iterative Closest Point
 ======================
 
 **University of Pennsylvania, CIS 565: GPU Programming and Architecture, Project 2**
