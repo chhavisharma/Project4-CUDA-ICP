@@ -6,7 +6,6 @@
 
 #include "kdtree.hpp"
 
-#define dimension 3
 #define X 0
 #define Y 1
 #define Z 2
@@ -97,106 +96,26 @@ void buildTree(std::vector<glm::vec3> &ybuff, int start, int end, int pidx, std:
 	}
 	return;
 }
-/*
-void KDTree::KDclosestPoint(std::vector<glm::vec4>& ybufftree, glm::vec3 goal, int &idx) {
-
-	int start = 0;
-	int end = ybufftree.size() - 1;
-
-	int depth = 0;
 
 
-	int curIdx = 0;
-	int nextIdx = 0;
-
-	int bestIdx = 0;
-	int bestIdxParent = 0;
-
-	float bestDist = glm::distance(goal, glm::vec3(ybufftree[0].x, ybufftree[0].y, ybufftree[0].z));
-
-	bool finished = false;
-	bool nodeDone = false;
-	bool goLeft = true; // else goRight
-	
-	//iterative KDtree search
-	while (!finished) {
-
-		// on curIdx
-		glm::vec3 curPoint = glm::vec3(ybufftree[curIdx].x, ybufftree[curIdx].y, ybufftree[curIdx].z);
-		int dim = dimension % depth;
-
-		//search current node using DFS
-		while (ybufftree[curIdx].w != 0.0f) { // currNode is not null
-
-			float dist = glm::distance(goal, curPoint);
-			if (dist < bestDist) {
-				bestDist = dist;
-				bestIdx = curIdx;
-				nodeDone = false;
-			}
-
-			// pick which child to look at 
-			if (dim == X) { goLeft = sortbyx(curPoint, goal); }
-			else if (dim == Y) { goLeft = sortbyy(curPoint, goal); }
-			else if (dim == Z) { goLeft = sortbyz(curPoint, goal); }
-
-			// find which child to go to
-			// nextIdx = goLeft ? leftChild : rightChild
-			nextIdx = goLeft ? 2*curIdx + 1 : 2*curIdx + 2;
-
-			curIdx = nextIdx;
-		}
-		if (nodeDone) {
-			finished = true;
-		}
-		else {
-			// check if parent of best node could have better values on other branch
-			float d = 0.0f;
-
-			if (dim == X) { d = std::abs(curPoint.x -  goal.x); }
-			else if (dim == Y) { d = std::abs(curPoint.y - goal.y); }
-			else if (dim == Z) { d = std::abs(curPoint.z - goal.z); }
-
-			if (dim == X) { goLeft = sortbyx(curPoint, goal); }
-			else if (dim == Y) { goLeft = sortbyy(curPoint, goal); }
-			else if (dim == Z) { goLeft = sortbyz(curPoint, goal); }
-
-			if (d < bestDist) {
-				curIdx = goLeft ? 2 * curIdx + 1 : 2 * curIdx + 2;
-				nodeDone = true;
-			}
-			else
-				finished = true;
-		}
-
-	}
-	idx = bestIdx;
-}
-*/
-
-struct stack {
-	int dataIdx;
-	bool good;
-	int depth;
-	stack() : dataIdx(0),good(true),depth(0){}
-};
-
-void stack_push(std::vector<stack>& st, int data, bool good, int depth, int &top) {
+void mystack_pushCPU(std::vector<mystack>& st, int data, bool good, int depth, int &top) {
 	top += 1;
 	st[top].dataIdx = data;
 	st[top].good = good;
 	st[top].depth = depth;
 }
 
-void stack_pop(std::vector<stack>& st, int &data, bool &good, int &depth, int &top) {
+void mystack_popCPU(std::vector<mystack>& st, int &data, bool &good, int &depth, int &top) {
 	data = st[top].dataIdx;
 	good = st[top].good ;
 	depth = st[top].depth;
 	top -= 1;
 }
 
-float compute_distance(glm::vec3 query, glm::vec3 target, int depth, bool &right) {
-	int d = dimension % depth;
+float compute_distanceCPU(glm::vec3 query, glm::vec3 target, int depth, bool &right) {
+
+	int d = depth% dimension;
+
 	float dist = 0.0f;
 	if (d == X) {
 		dist = std::abs(query.x - target.x);
@@ -213,7 +132,7 @@ float compute_distance(glm::vec3 query, glm::vec3 target, int depth, bool &right
 	return dist;
 }
 
-void KDTree::KDclosestPoint(std::vector<glm::vec4>& ybufftree, glm::vec3 goal, int &idx) {
+void KDclosestPointCPU(std::vector<glm::vec4>& ybufftree, glm::vec3 goal, int &idx, float &dist, std::vector<mystack> &st) {
 
 	int didx   = 0;
 	int depth = 0;
@@ -224,54 +143,70 @@ void KDTree::KDclosestPoint(std::vector<glm::vec4>& ybufftree, glm::vec3 goal, i
 
 	int bestIdx = 0;
 	float bestDist = 1.0f*LONG_MAX;
+	
+	mystack_pushCPU(st, didx, true, depth, top);
+	std::cout << "Post Pre Push Root | didx=" << didx << " top=" << top << " depth=" << depth << std::endl;
 
-	std::vector<stack> st(ybufftree.size());
-	
-	stack_push(st, idx, true, depth, top);
-	
 	// simluating recursion 
 	while (top > 0) {
+		
 		//didx, depth, kind, top all by reference
-		stack_pop(st, didx, good_root, depth, top);
-
-		if (ybufftree[didx].w == 0.0f){ // null
-			break;
-		}
-
-		glm::vec3 currPoint(ybufftree[didx].x, ybufftree[didx].y, ybufftree[didx].z);
-		bool right = false;
-		float dist = compute_distance(goal, currPoint, depth, right);
-				
-		if (good_root == false && bestDist < dist ) {
+		mystack_popCPU(st, didx, good_root, depth, top);
+		
+		std::cout << "==============================================================\n";
+		std::cout << "Init Pop | didx=" << didx << " top=" << top << " good="<<good_root<<" depth=" << depth << " isNotNull=" << ybufftree[didx].w << std::endl;
+		
+		if (ybufftree[didx].w == 0.0f){ // You are null - Exit
+			std::cout << "I am Null " << std::endl;
 			continue;
 		}
+
+		//get current point data
+		glm::vec3 currPoint(ybufftree[didx].x, ybufftree[didx].y, ybufftree[didx].z);
+		std::cout << "Got current point" << std::endl;
 		
-		if (bestDist > dist) {
+		// compute distance and goleft / goRight
+		bool right = false;
+		float dist = compute_distanceCPU(goal, currPoint, depth, right);
+		std::cout << "Computed Distance" << std::endl;
+				
+		if (good_root == false && bestDist < dist ) {
+			std::cout << "Bad Node and bestDist<dist " << bestDist <<"<"<<dist << " So COntinue!"<< std::endl;
+			continue; 
+		}
+		
+		// update best distance 
+		if (bestDist > dist) { 
 			bestDist = dist;
 			bestIdx = didx;
 		}
+		
+		// Now look at your children!
 
 		int depth_children = depth + 1;
+
 		if (right == true) { // goodSide is Right, // Badside is left
 			//bad child == left
-			stack_push(st, 2*idx+1, false, depth_children, top);
-
+			mystack_pushCPU(st, 2* didx +1, false, depth_children, top);
+			std::cout << "Pushed bad child at didx" << 2 * didx + 1 << " depth_children " << depth_children << " top becomes=" << top<< std::endl;
 			//good child == right
-			stack_push(st, 2*idx+2, true, depth_children, top);
+			mystack_pushCPU(st, 2* didx +2, true, depth_children, top);
+			std::cout << "Pushed good child at didx" << 2 * didx + 2 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
 		}
 		else {
 			//bad child == right
-			stack_push(st, 2 * idx + 2, false, depth_children, top);
+			mystack_pushCPU(st, 2*didx+2, false, depth_children, top);
+			std::cout << "Pushed bad child at didx" << 2 * didx + 2 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
 
 			//good child == left
-			stack_push(st, 2 * idx + 1, true, depth_children, top);
+			mystack_pushCPU(st, 2*didx+1, true, depth_children, top);
+			std::cout << "Pushed good child at didx" << 2 * didx + 1 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
 		}
 	}
-
-	
+	std::cout << "\n\nFinished traversing! Top=" <<top <<std::endl;
+	idx = bestIdx;
+	dist = bestDist;
 }
-
-
 
 void KDTree::initCpuKDTree(std::vector<glm::vec3> &ybuff, std::vector<glm::vec4>&ybufftree) {
 
@@ -289,15 +224,20 @@ void KDTree::initCpuKDTree(std::vector<glm::vec3> &ybuff, std::vector<glm::vec4>
 	std::cout << "Pritnting level order kd tree \n";
 	printKDTree4(ybufftree);
 
+	// Testing KD tree
 
-	std::cout << "Searching the kd tree for point \n";
 	int idx = -1;
-	glm::vec3 goal(7.1, 1.1, 4.1);
-	KDclosestPoint(ybufftree, goal, idx);
+	float dist = -1.0f;
+	//glm::vec3 goal(7.1, 1.1, 4.1);
+	glm::vec3 goal(1.1, 7.1, 4.8);
+	std::cout << "Searching the kd tree for point \n";
+	std::cout << goal.x << " " << goal.y << " " << goal.z << std::endl;
 	
-	std::cout << "Closest Point at idx "<<idx<<std::endl;
+	std::vector<mystack> stk(ybufftree.size());
+	KDclosestPointCPU(ybufftree, goal, idx, dist, stk);
+	
+	std::cout << "Closest Point at idx "<<idx<<" with dist "<< dist << std::endl;
 	std::cout << ybufftree[idx].x<<" " << ybufftree[idx].y<< " " << ybufftree[idx].z << std::endl;
-
 
 	return;
 }

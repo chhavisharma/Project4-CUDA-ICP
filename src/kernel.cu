@@ -14,17 +14,7 @@
 #include <thrust/reduce.h>
 
 #include "svd3.h" // credits to author
-
-#ifndef imax
-#define imax( a, b ) ( ((a) > (b)) ? (a) : (b) )
-#endif
-
-#ifndef imin
-#define imin( a, b ) ( ((a) < (b)) ? (a) : (b) )
-#endif
-
 #define checkCUDAErrorWithLine(msg) checkCUDAError(msg, __LINE__)
-
 
 void checkCUDAError(const char *msg, int line = -1) {
 	cudaError_t err = cudaGetLastError();
@@ -44,6 +34,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 
 /*! Block size used for CUDA kernel launch. */
 #define blockSize 512
+
 
 /*! Size of the starting area in simulation space. */
 #define scene_scale 0.050f
@@ -65,6 +56,9 @@ glm::vec3 *dev_YbufferCorr;
 glm::mat3 *dev_intermMats;
 glm::vec3 *dev_Ybuffer_m;
 glm::vec3 *dev_Xbuffer_m;
+
+glm::vec4 *dev_YbufferTree;
+mystack * dev_st;
 
 cudaEvent_t start, stop;
 
@@ -164,7 +158,7 @@ void Points::copyPointsToVBO(float *vbodptr_positions, float *vbodptr_velocities
 
 
 /******************
-* stepSimulation *
+* stepSimulations *
 ******************/
 
 __global__ void kernUpdatePos(int N, glm::vec3 *dev_pos, glm::vec3 val) {
@@ -191,6 +185,9 @@ __global__ void kernUpdateCol(int N, glm::vec3 *dev_col, int reducedSize) {
 	}
 }
 
+// //===================================
+// //==============CPU==================
+// //===================================
 
 void findCorrespondencesCPU(int Y, int X, std::vector<glm::vec3>& Ybuffer_corr, std::vector<glm::vec3>& Ybuffer, std::vector<glm::vec3>& Xbuffer) {
 	
@@ -448,7 +445,6 @@ void Points::initGPU(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbu
 	cudaThreadSynchronize();
 }
 
-
 __global__ void kernFindCorrespondences(int X, int Y, glm::vec3 *Xbuffer, glm::vec3 *Ybuffer, glm::vec3 *Ybuffer_corr) {
 
 	int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -472,7 +468,6 @@ __global__ void kernFindCorrespondences(int X, int Y, glm::vec3 *Xbuffer, glm::v
 	}
 }
 
-
 // Matrix Transpose
 __global__ void kernMatrixTranspose(int rows, int cols, float *matrix, float *matrix_T) {
 
@@ -486,7 +481,6 @@ __global__ void kernMatrixTranspose(int rows, int cols, float *matrix, float *ma
 		matrix_T[tpos] = matrix[pos];
 	}
 }
-
 
 // kernel to to matmul // A mxn // B nxk // C mxk
 __global__ void kernMatrixMultiply(const float *dev_A, const float *dev_B, float *dev_C, int m, int n, int k) {
@@ -510,7 +504,6 @@ __global__ void kernOuterProd(int X, glm::vec3 *dev_Xbuffer, glm::vec3 *dev_Ybuf
 	
 	dev_intermMats[idx] = glm::outerProduct( dev_YbufferCorr[idx], dev_Xbuffer[idx]);
 }
-
 
 __global__ void kernMeanCenter(int X, glm::vec3 *dev_buffer, glm::vec3 *dev_buffer_m, glm::vec3 mean) {
 
@@ -651,6 +644,324 @@ void Points::stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector
 */
 }
 
+
+// //===================================
+// //==============GPU with KD Tree ====
+// //===================================
+
+__device__ void mystack_push(mystack *st, int data, bool good, int depth, int &top) {
+	printf("In Device mystack_push \n");
+	top += 1;
+	st = st + top;
+	st->dataIdx = data;
+	st->good = good;
+	st->depth = depth;
+	printf("In Device mystack_push Finished\n");
+}
+
+__device__ void mystack_pop(mystack *st, int &data, bool &good, int &depth, int &top) {
+	data = st[top].dataIdx;
+	good = st[top].good;
+	depth = st[top].depth;
+	top -= 1;
+}
+
+__device__ float compute_distance(glm::vec3 query, glm::vec3 target, int depth, bool &right) {
+
+	int d = depth % dimension;
+
+	float dist = 0.0f;
+	if (d == Xd) {
+		dist = std::abs(query.x - target.x);
+		right = query.x > target.x ? true : false;
+	}
+	else if (d == Yd) {
+		dist = std::abs(query.y - target.y);
+		right = query.y > target.y ? true : false;
+	}
+	else if (d == Zd) {
+		dist = std::abs(query.z - target.z);
+		right = query.z > target.z ? true : false;
+	}
+	return dist;
+}
+
+__device__ void KDclosestPoint(glm::vec4* ybufftree, glm::vec3 *goal, mystack *st, int &idx, float &dist) {
+	
+	int didx = 0;
+	int depth = 0;
+	int top = 0;
+	bool kind = false;
+
+	bool good_root = false;
+
+	int bestIdx = 0;
+	float bestDist = 1.0f*LONG_MAX;
+	printf("In Device Function\n");
+	mystack_push(st, didx, true, depth, top);
+	//std::cout << "Post Pre Push Root | didx=" << didx << " top=" << top << " depth=" << depth << std::endl;
+	printf("Post Pre Push Root | didx=%d top=%d depth= %d \n", didx, top, depth);
+	// simluating recursion 
+	while (top > 0) {
+
+		//didx, depth, kind, top all by reference
+		mystack_pop(st, didx, good_root, depth, top);
+
+		//std::cout << "==============================================================\n";
+		//std::cout << "Init Pop | didx=" << didx << " top=" << top << " good=" << good_root << " depth=" << depth << " isNotNull=" << ybufftree[didx].w << std::endl;
+		printf("==============================================================");
+		printf("Pop Root | didx=%d top=%d depth= %d \n", didx, top, depth);
+
+		if (ybufftree[didx].w == 0.0f) { // You are null - Exit
+			//std::cout << "I am Null " << std::endl;
+			continue;
+		}
+
+		//get current point data
+		glm::vec3 currPoint(ybufftree[didx].x, ybufftree[didx].y, ybufftree[didx].z);
+		//std::cout << "Got current point" << std::endl;
+
+		// compute distance and goleft / goRight
+		bool right = false;
+		float dist = compute_distance(*goal, currPoint, depth, right);
+		//std::cout << "Computed Distance" << std::endl;
+
+		if (good_root == false && bestDist < dist) {
+			//std::cout << "Bad Node and bestDist<dist " << bestDist << "<" << dist << " So COntinue!" << std::endl;
+			continue;
+		}
+
+		// update best distance 
+		if (bestDist > dist) {
+			bestDist = dist;
+			bestIdx = didx;
+		}
+
+		// Now look at your children!
+
+		int depth_children = depth + 1;
+
+		if (right == true) { // goodSide is Right, // Badside is left
+			//bad child == left
+			mystack_push(st, 2 * didx + 1, false, depth_children, top);
+			//std::cout << "Pushed bad child at didx" << 2 * didx + 1 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
+			//good child == right
+			mystack_push(st, 2 * didx + 2, true, depth_children, top);
+			//std::cout << "Pushed good child at didx" << 2 * didx + 2 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
+		}
+		else {
+			//bad child == right
+			mystack_push(st, 2 * didx + 2, false, depth_children, top);
+			//std::cout << "Pushed bad child at didx" << 2 * didx + 2 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
+
+			//good child == left
+			mystack_push(st, 2 * didx + 1, true, depth_children, top);
+			//std::cout << "Pushed good child at didx" << 2 * didx + 1 << " depth_children " << depth_children << " top becomes=" << top << std::endl;
+		}
+	}
+	//std::cout << "\n\nFinished traversing! Top=" << top << std::endl;
+	idx = bestIdx;
+	dist = bestDist;
+}
+
+
+__global__ void kernFindCorrespondencesKD(int X, int Y, glm::vec3 *dev_Xbuffer, glm::vec3 *dev_Ybuffer, glm::vec4 *dev_YbufferTree, 
+	glm::vec3 *dev_YbufferCorr, mystack * dev_st, int sizeOfmystack){
+	
+	int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+	if (idx < X) {
+
+		if (idx == 0) {
+			printf("IN Compute Corr Idx %d \n", idx);
+			
+			int didx = -1;
+			float dist = -1.0f;
+			glm::vec3 goal(dev_Xbuffer[idx]);
+
+			KDclosestPoint(dev_YbufferTree, &goal, &dev_st[sizeOfmystack*idx], didx, dist);
+
+			dev_YbufferCorr[idx].x = dev_YbufferTree[didx].x;
+			dev_YbufferCorr[idx].y = dev_YbufferTree[didx].y;
+			dev_YbufferCorr[idx].z = dev_YbufferTree[didx].z;
+			
+			if (idx == 0 || idx == X - 1)printf("%d CCorr %f %f %f", idx, dev_YbufferCorr[idx].x, dev_YbufferCorr[idx].y, dev_YbufferCorr[idx].z);
+			}
+		}
+}
+
+void Points::initGPUKD(std::vector<glm::vec3>& Ybuffer, std::vector<glm::vec3>& Xbuffer, 
+	std::vector<glm::vec4>& YbufferTree, std::vector<mystack>& st, int sizeOfmystack) {
+
+	int Y = Ybuffer.size();
+	int X = Xbuffer.size();
+	int Yt = YbufferTree.size();
+
+	numObjects = Y + X;
+
+	// Bring data to GPU
+
+	cudaMalloc((void**)&dev_Ybuffer, Y*sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_Y failed!");
+
+	cudaMalloc((void**)&dev_Xbuffer, X*sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_X failed!");
+
+	cudaMalloc((void**)&dev_YbufferTree, Yt*sizeof(glm::vec4));
+	checkCUDAErrorWithLine("cudaMalloc dev_X failed!");
+
+	cudaMemcpy(dev_Ybuffer, &Ybuffer[0], Ybuffer.size()*sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy buffers Ybuffer failed!");
+
+	cudaMemcpy(dev_Xbuffer, &Xbuffer[0], Xbuffer.size()*sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy buffers Xbuffer failed!");
+
+	cudaMemcpy(dev_YbufferTree, &YbufferTree[0], YbufferTree.size() * sizeof(glm::vec4), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy buffers YbufferTree failed!");
+
+	cudaMemcpy(dev_st , &st[0], st.size() * sizeof(mystack), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy buffers dev_st failed!");
+
+	cudaMalloc((void**)&dev_YbufferCorr, X * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_YbufferCorr failed!");
+
+	cudaMalloc((void**)& dev_intermMats, X * sizeof(glm::mat3));
+	checkCUDAErrorWithLine("cudaMalloc dev_intermMats failed!");
+
+	cudaMalloc((void**)&dev_Ybuffer_m, X * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_Y failed!");
+
+	cudaMalloc((void**)&dev_Xbuffer_m, X * sizeof(glm::vec3));
+	checkCUDAErrorWithLine("cudaMalloc dev_X failed!");
+
+	std::cout << "Finished." << std::endl;
+	cudaThreadSynchronize();
+
+}
+
+
+void Points::stepSimulationGPUKD(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, 
+	std::vector<glm::vec4> &YbufferTree, std::vector<mystack>& st, int sizeOfmystack, float dt) {
+
+	int Y = Ybuffer.size();
+	int X = Xbuffer.size();
+
+	dim3 fullBlocksPerGrid((X + blockSize - 1) / blockSize);
+
+	// Performace Measurment
+	// cudaEventCreate(&start);
+
+	//Find Correspondences
+	std::cout << "Computing Correspondances.\n";
+
+	kernFindCorrespondencesKD <<<fullBlocksPerGrid, blockSize >> > (X, Y, &dev_Xbuffer[0], &Ybuffer[0] , &YbufferTree[0], &dev_YbufferCorr[0], dev_st, sizeOfmystack);
+	
+	cudaThreadSynchronize();
+
+	//compute Mean
+	glm::vec3 X_mean = thrust::reduce(thrust::device, dev_Xbuffer, dev_Xbuffer + X, glm::vec3(0.0f));
+	glm::vec3 Y_mean = thrust::reduce(thrust::device, dev_YbufferCorr, dev_YbufferCorr + X, glm::vec3(0.0f));
+
+	X_mean = X_mean / (1.0f * X);
+	Y_mean = Y_mean / (1.0f * X);
+
+	std::cout << " X mean :" << X_mean.x << " " << X_mean.y << " " << X_mean.z << std::endl;
+	std::cout << " Y mean :" << Y_mean.x << " " << Y_mean.y << " " << Y_mean.z << std::endl;
+
+	// MeanCenter Data
+	kernMeanCenter << < fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer, dev_Xbuffer_m, X_mean);
+	kernMeanCenter << < fullBlocksPerGrid, blockSize >> > (X, dev_YbufferCorr, dev_Ybuffer_m, Y_mean);
+	cudaThreadSynchronize();
+
+	// Compute YtX
+	std::cout << "Computing kernOuterProd \n";
+
+	// ELement wise outer product
+	kernOuterProd << <fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer_m, dev_Ybuffer_m, dev_intermMats);
+	std::cout << "Computing thrust::reduce \n";
+	cudaThreadSynchronize();
+
+	//Reduction using Thrust
+	glm::mat3 YtX = thrust::reduce(thrust::device, dev_intermMats, dev_intermMats + X, glm::mat3(0.0f));
+
+
+	std::cout << "Matrix YtX\n";
+	std::cout << YtX[0][0] << " " << YtX[1][0] << " " << YtX[2][0] << "\n"
+			 << YtX[0][1] << " " << YtX[1][1] << " " << YtX[2][1] << "\n"
+			 << YtX[0][2] << " " << YtX[1][2] << " " << YtX[2][2] << "\n";
+
+
+	//cudaMemcpy(&dev_matrix1, &YtX, sizeof(glm::mat3), cudaMemcpyHostToDevice);
+
+	// ComputeMpute SVD(YtX)
+	glm::mat3 Rot(0.0f);
+	glm::vec3 Trans(0.0f);
+
+	glm::mat3 U(0.0f);
+	glm::mat3 S(0.0f);
+	glm::mat3 V(0.0f);
+
+	// compute SVD
+
+	svd(YtX[0][0], YtX[1][0], YtX[2][0],
+		YtX[0][1], YtX[1][1], YtX[2][1],
+		YtX[0][2], YtX[1][2], YtX[2][2],
+
+		U[0][0], U[1][0], U[2][0],
+		U[0][1], U[1][1], U[2][1],
+		U[0][2], U[1][2], U[2][2],
+
+		S[0][0], S[1][0], S[2][0],
+		S[0][1], S[1][1], S[2][1],
+		S[0][2], S[1][2], S[2][2],
+
+		V[0][0], V[1][0], V[2][0],
+		V[0][1], V[1][1], V[2][1],
+		V[0][2], V[1][2], V[2][2]);
+
+	//Compute R = UVt
+	Rot = U * glm::transpose(V);
+
+	std::cout << "Matrix Rotation \n";
+	std::cout << Rot[0][0] << " " << Rot[1][0] << " " << Rot[2][0] << "\n"
+		<< Rot[0][1] << " " << Rot[1][1] << " " << Rot[2][1] << "\n"
+		<< Rot[0][2] << " " << Rot[1][2] << " " << Rot[2][2] << "\n";
+
+	//compute T = Ymean =RXmean
+	Trans = Y_mean - (Rot * X_mean);
+
+	std::cout << "Trans \n";
+	std::cout << Trans.x << " " << Trans.y << " " << Trans.z << " " << std::endl;
+
+	// Update dev_Xbuffer
+	kernRotTransPoints << < fullBlocksPerGrid, blockSize >> > (X, dev_Xbuffer, Rot, Trans); //RX + T
+	cudaThreadSynchronize();
+
+	glm::vec3 Xbuff(0.0f);
+	cudaMemcpy(&Xbuff, &dev_Xbuffer[0], sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+	checkCUDAErrorWithLine("cudaMemcopy Xbuff failed!");
+
+
+	std::cout << "Updated X \n";
+	std::cout << Xbuff.x << " " << Xbuff.y << " " << Xbuff.z << " " << std::endl;
+
+	//render
+	cudaMemcpy(&dev_pos[Y], &dev_Xbuffer[0], X * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	checkCUDAErrorWithLine("cudaMemcopy Xbuff failed!");
+	cudaThreadSynchronize();
+
+	//// Performace Measurment
+	/*cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	float mills = 0.0;
+	cudaEventElapsedTime(&mills, start, stop);
+	printf("Points::stepSimulationGPUNaive | Time-milisecond = %f \n", mills);
+*/
+
+}
+
+
+
 void Points::endSimulation() {
 	cudaFree(dev_col);
 	cudaFree(dev_Ybuffer);
@@ -660,6 +971,7 @@ void Points::endSimulation() {
 	cudaFree(dev_YbufferCorr);
 	cudaFree(dev_pos);
 	cudaFree(dev_intermMats);
+	cudaFree(dev_YbufferTree);
 
 	checkCUDAErrorWithLine("cudaFree failed!");
 }

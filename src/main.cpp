@@ -16,6 +16,7 @@
 // LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
 #define VISUALIZE 1
 #define GPUNAIVE 1
+#define GPUKDTREE 0
 #define COHERENT_GRID 0
 #define dims 3
 
@@ -25,6 +26,9 @@ float DT = 0.2f;
 
 std::vector<glm::vec3> Ybuffer;
 std::vector<glm::vec3> Xbuffer;
+std::vector<glm::vec4> YbufferTree;
+std::vector<mystack> st;
+int sizeOfmystack;
 
 
 // Data read function 
@@ -102,6 +106,7 @@ int main(int argc, char* argv[]) {
 	std::cout << Xbuffer[0].x << " " << Xbuffer[0].y << " " << Xbuffer[0].z << std::endl;
 	std::cout << "total points = " << N_FOR_VIS << std::endl;
 
+#if GPUKDTREE
 	std::cout << "Building KDsearch tree for Y" << std::endl;
 	std::vector<glm::vec3> ybuff ={
 							glm::vec3(1,7,5),
@@ -112,13 +117,24 @@ int main(int argc, char* argv[]) {
 							glm::vec3(6,2,3),
 							glm::vec3(7,1,4)
 							};
+	int size = KDTree::nextPowerOf2(2*(ybuff.size()+1)); // to store nulls for leaf nodes
+	std::vector<glm::vec4> YbuffTree(size, glm::vec4(0.0f));
 
-	int size = KDTree::nextPowerOf2(2*ybuff.size()); // to store nulls for leaf nodes
-	std::vector<glm::vec4> YbufferTree(size, glm::vec4(0.0f));
+	// Init mystack
+	sizeOfmystack = ilog2ceil(size);
+	mystack stmp;
+	stmp.dataIdx = 0;
+	stmp.depth = 0;
+	stmp.good = true;
+	std::cout << "sizeOfmystack = "<< sizeOfmystack<<"\n";
+	std::vector<mystack> stck(x_sz * sizeOfmystack, stmp);
+	st.assign(stck.begin(), stck.end());
 
-	KDTree::initCpuKDTree(ybuff,YbufferTree);
+	KDTree::initCpuKDTree(ybuff,YbuffTree);
+	YbufferTree.assign(YbuffTree.begin(), YbuffTree.end());
 
-	/*
+# endif
+ 
 	if (init(argc, argv)) {
 		mainLoop();
 		Points::endSimulation();
@@ -126,7 +142,8 @@ int main(int argc, char* argv[]) {
 	}
 	else {
 		return 1;
-	}*/
+	}
+
 
 	return 0;
 }
@@ -208,8 +225,11 @@ bool init(int argc, char **argv) {
 
 	// Initialize N-body simulation
 	Points::initCpuICP(Ybuffer, Xbuffer);
+#if GPUKDTREE
+	Points::initGPUKD(Ybuffer, Xbuffer, YbufferTree, st, sizeOfmystack);
+#else
 	Points::initGPU(Ybuffer, Xbuffer);
-
+#endif
 	updateCamera();
 
 	initShaders(program);
@@ -296,8 +316,8 @@ void runCUDA() {
 	cudaGLMapBufferObject((void**)&dptrVertVelocities, pointVBO_velocities);
 
 	// execute the kernel
-#if GPUNAIVE && COHERENT_GRID
-	Points::stepSimulationCoherentGrid(DT);
+#if GPUKDTREE
+	Points::stepSimulationGPUKD(Ybuffer, Xbuffer, YbufferTree, st, sizeOfmystack, DT);
 #elif GPUNAIVE
 	Points::stepSimulationGPUNaive(Ybuffer, Xbuffer, DT);
 #else

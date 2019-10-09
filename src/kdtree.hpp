@@ -11,10 +11,9 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include "common.h"
 
 namespace KDTree {
-	//std::vector<glm::vec3> YbufferTree;
 	void initCpuKDTree(std::vector<glm::vec3> &ybuff, std::vector<glm::vec4>& ybufftree);
 	unsigned int nextPowerOf2(unsigned int n);
-	void KDclosestPoint(std::vector<glm::vec4>& ybufftree, glm::vec3 point, int &idx);
 }

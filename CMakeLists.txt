@@ -72,6 +72,7 @@ set(headers
     src/utilityCore.hpp
     src/svd3.h
     src/kdtree.hpp
+    src/common.h
     )
 
 set(sources
