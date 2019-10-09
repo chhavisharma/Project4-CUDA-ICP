@@ -8,6 +8,7 @@
 
 #include "main.hpp"
 
+
 // ================
 // Configuration
 // ================
@@ -76,8 +77,6 @@ void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offse
 	return;
 }
 
-
-
 /*
 *C main function.
 */
@@ -103,6 +102,23 @@ int main(int argc, char* argv[]) {
 	std::cout << Xbuffer[0].x << " " << Xbuffer[0].y << " " << Xbuffer[0].z << std::endl;
 	std::cout << "total points = " << N_FOR_VIS << std::endl;
 
+	std::cout << "Building KDsearch tree for Y" << std::endl;
+	std::vector<glm::vec3> ybuff ={
+							glm::vec3(1,7,5),
+							glm::vec3(2,6,6),
+							glm::vec3(3,5,7),
+							glm::vec3(4,4,1),
+							glm::vec3(5,3,2),
+							glm::vec3(6,2,3),
+							glm::vec3(7,1,4)
+							};
+
+	int size = KDTree::nextPowerOf2(2*ybuff.size()); // to store nulls for leaf nodes
+	std::vector<glm::vec4> YbufferTree(size, glm::vec4(0.0f));
+
+	KDTree::initCpuKDTree(ybuff,YbufferTree);
+
+	/*
 	if (init(argc, argv)) {
 		mainLoop();
 		Points::endSimulation();
@@ -110,7 +126,9 @@ int main(int argc, char* argv[]) {
 	}
 	else {
 		return 1;
-	}
+	}*/
+
+	return 0;
 }
 
 //-------------------------------

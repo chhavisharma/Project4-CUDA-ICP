@@ -15,10 +15,13 @@
 #include "glslUtility.hpp"
 #include "kernel.h"
 
+#include <math.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <vector>
 #include <algorithm>
+
+#include "kdtree.hpp"
 
 //====================================
 // GL Stuff

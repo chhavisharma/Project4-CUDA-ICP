@@ -71,6 +71,7 @@ set(headers
     src/main.hpp
     src/utilityCore.hpp
     src/svd3.h
+    src/kdtree.hpp
     )
 
 set(sources
@@ -78,6 +79,7 @@ set(sources
     src/kernel.cu
     src/main.cpp
     src/utilityCore.cpp
+    src/kdtree.cpp
     )
 
 list(SORT headers)
