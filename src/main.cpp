@@ -13,11 +13,11 @@
 // Configuration
 // ================
 
-// LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
+//toggles 
 #define VISUALIZE 1
-#define GPUNAIVE 0
-#define GPUKDTREE 1
-#define COHERENT_GRID 0
+#define GPUNAIVE 1
+#define GPUKDTREE 0
+
 #define dims 3
 
 // LOOK-1.2 - change this to adjust particle count in the simulation
@@ -33,7 +33,7 @@ int treesize;
 int tracksize;
 
 // Data read function 
-void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offset) {
+void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offset, bool flag) {
 
 	std::ifstream filein(filename);
 	int count = 0;
@@ -59,8 +59,8 @@ void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offse
 
 	//vertices are stored from line 24 onwards until vcount
 	for (std::string line; std::getline(filein, line); )
-	{
-		if (count > 24 + vertices_cnt) break;
+	{  //24
+		if (count >24 + vertices_cnt) break;
 
 		if (count >= 24) {
 			std::istringstream is(line);
@@ -68,9 +68,20 @@ void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offse
 			float x=0.0f, y = 0.0f, z = 0.0f;
 			is >> x >> y >> z;
 
-			glm::vec3 tmp(x+offset, y+offset, z+offset);
-			//std::cout<<x<<" "<<y<<" "<<z<<std::endl;
-			buffer.push_back(tmp);
+			if (flag) {
+				//glm::vec3 pt(x+10 , y+5, z+5 );
+				//glm::vec3 moved_point = pt;//* glm::mat3( 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+				glm::vec3 tmp(x + offset, y + offset, z + offset);
+				//std::cout<<x<<" "<<y<<" "<<z<<std::endl;
+				buffer.push_back(tmp);
+				//buffer.push_back(moved_point);
+			}
+			else {
+			
+				glm::vec3 tmp(x, y, z);
+				buffer.push_back(tmp);
+			}
+
 
 			//int idx = (count - 24)*dims;
 			//is >> buffer[idx] >> buffer[idx + 1] >> buffer[idx + 2];
@@ -93,10 +104,10 @@ int main(int argc, char* argv[]) {
 	printf("** Read Point Cloud Data **\n");
 
 	std::cout << "Data File Y(target): " << argv[1] << std::endl;
-	read_data(Ybuffer, argv[1], 0.0f);
+	read_data(Ybuffer, argv[1], 0.0f, false);
 
 	std::cout << "Data File X(source): " << argv[2] << std::endl;
-	read_data(Xbuffer, argv[2], 0.05f);
+	read_data(Xbuffer, argv[2], 0.9f, true);
 
 	// Initialize drawing state
 	N_FOR_VIS = Ybuffer.size() + Xbuffer.size();
@@ -108,7 +119,7 @@ int main(int argc, char* argv[]) {
 #if GPUKDTREE
 	std::cout << "Building KDsearch tree for Y" << std::endl;
 
-	//std::vector<glm::vec3> ybuff ={
+	//std::vector<glm::vec3> ybuff ={ // test data
 	//						glm::vec3(1,7,5),
 	//						glm::vec3(2,6,6),
 	//						glm::vec3(3,5,7),
