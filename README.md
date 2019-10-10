@@ -23,8 +23,7 @@ CUDA Iterative Closest Point
 
 ### Introduction 
 
-In this project, we show different optimzations of the iterative closest point algorithm that aligns patially overlapping point clouds of different views of an object.
-Operations in ICP on large point clouds are highly parallelizable which makes it a good candiate for CUDA based implemantion and optimization.
+In this project, we show different optimzations of the iterative closest point algorithm which is used to align patially overlapping point clouds of different views of an object. Operations in ICP on large point clouds are highly parallelizable which makes it a good candiate for CUDA based implemantion and optimization.
 
 [Iterative closest point algorithm](https://en.wikipedia.org/wiki/Iterative_closest_point) successively estimates and applies rotation and transaltion between two sets of point clouds of different views of an object to achieve the closest alignment. 
 The algorithm iteratively revises the transformation needed to minimize the distance between corresponding points across the two point clouds. ICP depends on an initial guess of the rigid body transformation (Rotation and translation) to acheive good results in case of drastically different views of objects.
@@ -37,14 +36,17 @@ Given:
  
 At each iteration:
  - FOr each point in the source, find the closest correspoding point in y based on some metric. We use minimum euclidian distance to assign the closest point.
- - Now, for a set of correspondances, we estimation the rotation and transaltion between them by solving the [orthogonal procrustes problem](https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem). The steps involved solve the following optmization problem are as follows:
+ - Now, for a set of correspondances, we estimation the rotation and transaltion between them by solving the [orthogonal procrustes problem](https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem). The steps involved solve the following optmization problem a:
          <p align="center">
-            <img src="img/Capture.PNG" width="420" height="420"/>
-            <img src="img/Capture2.PNG" width="420" height="420" />
+            <img src="img/Capture.PNG" width="400"/>
          </p>   
          - We do this by mean centring the source and target corrspondances, and then computing the matrix W= transpose(Ymeancntred)* Xmeancntred.
          - Then, the Rotation is U * Transpose(V) where singualr value decomposition of W, ie.e SVD(W) = USV. 
          - Translation,T is Ymean - R * Xmean.
+          <p align="center">
+            <img src="img/Capture2.PNG" width="400" />
+         </p>  
+         
  - Reapeat until convergence i.e. when predicted Rotation matrix is identity and translation is close to zero.
        
 
@@ -57,9 +59,9 @@ Three variations of ICP on have been implmented:
 
 <p align="center"> CPU | GPU Naive | GPU KDTree </p>
 <p align="center">
-   <img src="img/cpu.gif" width="300"/>
-   <img src="img/gifForTitle2.gif" width="300"  />
-   <img src="img/gpuKD2.gif" width="300"  />
+   <img src="img/cpu.gif" width="280" height="280"/>
+   <img src="img/gifForTitle2.gif" width="280" height="280"  />
+   <img src="img/gpuKD2.gif" width="280" height="280"  />
 </p>  
 
 #### CPU Iterative Closest Point  
@@ -71,8 +73,8 @@ The CPU implementation is optimised by using a CUDA kernel to perfrom the coress
 #### GPU Iterative Closest Point with KDTree Search
 We further optimize each iteration by optimizing the search per source point. We implement a KD-tree structure to search the target 3D point cloud data. A kd tree is a binary tree in which every leaf node is a k-dimensional point. Every non-leaf node can be thought of as implicitly generating a splitting hyperplane that divides the space into two parts, known as half-spaces. Points to the left of this hyperplane are represented by the left subtree of that node and points to the right of the hyperplane are represented by the right subtree. 
 <p align="center">
-   <img src="img/kdtree2.png" width="420" height="420"/>
-   <img src="img/kdtree.png" width="420" height="420" />
+   <img src="img/kdtree2.png" width="320" height="420"/>
+   <img src="img/kdtree.png" width="520" height="420" />
 </p>    
 The average search time on a 3D tree for target data of size n is O(log(n)).
 The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive(CUDA recursion limitations). To facilitate iterative traveral and backtracking over the tree, a book-keeping array isalso maintained. 
