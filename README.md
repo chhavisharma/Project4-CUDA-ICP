@@ -135,7 +135,7 @@ The initial iterations KDtree is slower since the source and target points are h
 
 
 ### Bloopers
-In image 1, error in the rotation computation deformed the point cloud and ICP never converged. in image 2 drastic differnce in point clouds causes ICP to misalign data.
+In the left image, error in the rotation computation deformed the point cloud and ICP never converged. In the right image, drastic differnce in point clouds causes ICP to misalign data.
 <p align="center">
    <img src="img/blopper0.gif" width="400" height="400"/>
    <img src="img/blopper.gif" width="400" height="400"/>
