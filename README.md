@@ -31,22 +31,19 @@ The algorithm iteratively revises the transformation needed to minimize the dist
 
 ### Algorithm
 Given:
- - X : N Source points (x_i, y_i, z_i)
- - Y : M Target points (x_i, y_i, z_i)
+ - P : M Source points (x_i, y_i, z_i)
+ - X : N Target points (x_i, y_i, z_i)
  
 At each iteration:
  - FOr each point in the source, find the closest correspoding point in y based on some metric. We use minimum euclidian distance to assign the closest point.
- - Now, for a set of correspondances, we estimation the rotation and transaltion between them by solving the [orthogonal procrustes problem](https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem). The steps involved solve the following optmization problem a:
-         <p align="center">
-            <img src="img/Capture.PNG" width="400"/>
-         </p>   
-         - We do this by mean centring the source and target corrspondances, and then computing the matrix W= transpose(Ymeancntred)* Xmeancntred.
-         - Then, the Rotation is U * Transpose(V) where singualr value decomposition of W, ie.e SVD(W) = USV. 
-         - Translation,T is Ymean - R * Xmean.
-          <p align="center">
-            <img src="img/Capture2.PNG" width="400" />
-         </p>  
-         
+ - Now, for a set of correspondances, we estimation the rotation and transaltion between them by solving the [orthogonal procrustes problem](https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem). The prblem can be formulated as finding the best R and T that minimises the average distance between the source and the target points. This optimization can be solved by solving the least squares problem, with the solution being the SVD of the matrix product of the source and target. More precisely: 
+<p align="center">
+  <img src="img/Capture.PNG" width="400"/>
+</p>   
+<p align="center">
+  <img src="img/Capture2.PNG" width="400" />
+</p>           
+ - We do this by mean centring the source and target corrspondances, and then computing the matrix W= transpose(Xmeancntred)* Pmeancntred. Then, the Rotation is U * Transpose(V) where singualr value decomposition of W, ie.e SVD(W) = USV. Translation,T is Xmean-R * Pmean.      
  - Reapeat until convergence i.e. when predicted Rotation matrix is identity and translation is close to zero.
        
 
@@ -64,6 +61,7 @@ Three variations of ICP on have been implmented:
    <img src="img/gpuKD2.gif" width="280" height="280"  />
 </p>  
 
+
 #### CPU Iterative Closest Point  
 The CPU implementation uses the steps in the above algorithm to iteratively apply roation andtranlation on source data. The correnpondance computation requires an O(M) search for each element in the source point cloud. This is done naively on th CPu where each source points looks through the entire traget set to compute the closest correpondence. 
 
@@ -77,13 +75,63 @@ We further optimize each iteration by optimizing the search per source point. We
    <img src="img/kdtree.png" width="520" height="420" />
 </p>    
 The average search time on a 3D tree for target data of size n is O(log(n)).
-The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive(CUDA recursion limitations). To facilitate iterative traveral and backtracking over the tree, a book-keeping array isalso maintained. 
+The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive. CUDA does not support very deep recursiions and therfore an iterative traversal technique to perfrom nearest neighbour search on the KD tree is implemented. To facilitate iterative traveral and backtracking over the tree, a book-keeping array isalso maintained. The pseudo code for Nearest neighbour search in KD tree is as follows:-
+
+```
+ bestDist = INF
+ bestDistNode = Null
+	mystack_push(root)
+	// simluating recursion 
+ 
+	while (stacktop not empty) 
+    currPoint = mystack_pop()
+    if (point == null) 
+     continue;
+		
+     distance = glm::distance(goal, currPoint);
+     good_root, go_right = find_status(goal, currPoint);
+		 
+	    if (good_root == false) 
+         // Look at the parent to decide if the subtree is worth exploring
+				     float parent_dist = compute_distance(goal, parentPoint)
+				     if (bestDist < parent_dist) 
+					        continue
+
+		   // update best distance 
+		   if (bestDist > distance) 
+			      bestDist = distance
+         bestDistNode = currPoint
+         
+         
+		   // Now look at your children and push then on stack
+		   if (go_right == true) 
+          // push the bad child on stack first
+			       mystack_push(currPoint.leftchild)
+
+			       //Then push the right child on stack 
+			       mystack_push(currPoint.rightchild)
+		    
+      else 
+          // push the bad child on stack first
+			       mystack_push(currPoint.rightchild)
+
+			       //Then push the right child on stack 
+			       mystack_push(currPoint.leftchild)
+	}
+
+	return bestDistNode
+```
+
 
 #### Iterative Rendering
 The point cloud data is also rendered iteratively to show the chages made by the application of each rotation and translation predicted by the algorithm. 
 
 
 ### Analysis
+
+<p align="center"> Search Improvment (Runtime) </p>
+<p align="center"> CPU    -> GPU Naive -> GPU KDTree </p>
+<p align="center"> O(M*N) ->   O(N)    -> O(log(N))   </p>
 
 The time taken per iteration for the above three cases is plotted below:-
 We cansee that only in the K-D tree seach, the time taken per iteration redues as the point cloud aligns better with the target.
