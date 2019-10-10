@@ -44,9 +44,9 @@ At each iteration:
 </p>   
 
 <p align="center">
-  <img src="img/Capture0.PNG" width="200" />
-  <img src="img/Capture1.PNG" width="200" />
-  <img src="img/Capture2.PNG" width="200" />
+  <img src="img/Capture0.PNG" width="280" />
+  <img src="img/Capture1.PNG" width="280" />
+  <img src="img/Capture2.PNG" width="280" />
 </p>
 
  - We do this by mean centring the source and target corrspondances, and then computing the matrix W= transpose(Xmeancntred)* Pmeancntred. Then, the Rotation is U * Transpose(V) where singualr value decomposition of W, ie.e SVD(W) = USV. Translation,T is Xmean-R * Pmean.      
@@ -64,8 +64,8 @@ Three variations of ICP on have been implmented:
 <p align="center">     CPU     |     GPU Naive     |     GPU KDTree     </p>
 <p align="center">
    <img src="img/cpu.gif" width="280" height="280"/>
-   <img src="img/gpuKD2.gif" width="280" height="280"  />
    <img src="img/gifForTitle2.gif" width="280" height="280"  />	
+   <img src="img/gpuKD2.gif" width="280" height="280"  />
 </p>  
 
 #### CPU Iterative Closest Point  
@@ -82,52 +82,14 @@ We further optimize each iteration by optimizing the search per source point. We
 </p>    
 The average search time on a KD tree for target data of size n is O(log(n)).
 
-The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive. CUDA does not support very deep recursiions and therfore an iterative traversal technique to perfrom nearest neighbour search on the KD tree is implemented. To facilitate iterative traveral and backtracking over the tree, a book-keeping array isalso maintained. The pseudo code for Nearest neighbour search in KD tree is as follows:-
+The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive. CUDA does not support very deep recursiions and therfore an iterative traversal technique to perfrom nearest neighbour search on the KD tree is implemented. To facilitate iterative traveral and backtracking over the tree, a book-keeping array is also maintained. The pseudo code for Nearest neighbour search in KD tree is as follows:-
+<p align="center">
+   <img src="img/NNpseudo.PNG"/>
+</p> 
 
-```
-bestDist = INF
-bestDistNode = Null
-mystack_push(root)
-// simluating recursion 
- 
-while (stacktop not empty) 
-    currPoint = mystack_pop()
-    if (point == null) 
-        continue;
-		
-    distance = glm::distance(goal, currPoint);
-    good_root, go_right = find_status(goal, currPoint);
-		 
-    if (good_root == false) 
-    // Look at the parent to decide if the subtree is worth exploring
-        float parent_dist = compute_distance(goal, parentPoint)
-        if (bestDist < parent_dist) 
-            continue
-
-    // update best distance 
-    if (bestDist > distance) 
-        bestDist = distance
-        bestDistNode = currPoint
-         
-         
-    // Now look at your children and push then on stack
-    if (go_right == true) 
-        // push the bad child on stack first
-         mystack_push(currPoint.leftchild)
-
-        //Then push the right child on stack 
-        mystack_push(currPoint.rightchild)
-		    
-    else 
-        // push the bad child on stack first
-        mystack_push(currPoint.rightchild)
-
-        //Then push the right child on stack 
-         mystack_push(currPoint.leftchild)
-}
-
-return bestDistNode
-```
+<p align="center"> Search Improvment (Runtime)</p>
+<p align="center"> CPU    -> GPU Naive -> GPU KDTree </p>
+<p align="center"> O(M*N) ->   O(N)    -> O(log(N))   </p>
 
 #### Iterative Rendering
 The point cloud data is also rendered iteratively to show the chages made by the application of each rotation and translation predicted by the algorithm. This shows that the source object is slowing moving towards the target as a rigid body.
@@ -135,15 +97,11 @@ The point cloud data is also rendered iteratively to show the chages made by the
 <p align="center">
    <img src="img/cow.gif" width="280" height="280"/>
    <img src="img/ant.gif" width="280" height="280"  />
-   <img src="img/gifForTitle2.gif" width="280" height="280"  />	
+   <img src="img/bunny2.gif" width="280" height="280"  />	
 </p>  
 
 
 ### Analysis
-
-<p align="center"> Search Improvment (Runtime) on Stanford bunny - 40k points </p>
-<p align="center"> CPU    ->   GPU Naive   -> GPU KDTree </p>
-<p align="center"> O(M*N) ->     O(N)      -> O(log(N))   </p>
 
 The time taken per iteration for the above three cases is plotted below:-
 <p align="center">
@@ -151,12 +109,13 @@ The time taken per iteration for the above three cases is plotted below:-
    <img src="img/g2.PNG" />
 
 </p>  
-The GPU Naive perfromsbetter than CPU ecuase each element is the source looks of the Nearrest neighbour in the target paralelly on CUDA.
 
-In K-D tree seach the time taken per iteration reduces as the point cloud aligns better with the target.
+ - The GPU Naive perfromsbetter than CPU ecuase each element is the source looks of the Nearrest neighbour in the target paralelly on CUDA.
+
+ - In K-D tree seach, the time taken per iteration reduces as the point cloud aligns better with the target.
 The initial iterations KDtree is slower since the source and target points are highly miss-aligned and each search call goes over the entire tree (worst case time) to find the best neighbour. As the source getss aligned better with the target, the correspondences are found earlier in the tree traversal and the runtime reduces.
 
-However, we see a that the best time on GPU Naive is better than GPU KD-Tree on the current dataset. Even though GPU KD Tree should be theoratically faster (log(n)), the memory overheads of traversing the tree in the current implementation dominate the runtime when the number of points are not very large. The tree traversal is also *non-contiguous* memory access which causes more fetaches from the global memory than the naive implementation here the search is on contiguous memeory and hence is faster. In this dataset  the KD tree traversal converges at a higher runtime than the naive approach. The naive search accesses more data but it is contiguos, whereas, KD tree search jumps around nodes (this can't be predetermined and therefore stored contiguosly) looking at non-contiguous data and thus takes more time even with lesser comaprasions. 
+ - However, we see a that the best time on GPU Naive is better than GPU KD-Tree on the current dataset. Even though GPU KD Tree should be theoratically faster (log(n)), the memory overheads of traversing the tree in the current implementation dominate the runtime when the number of points are not very large. The tree traversal is also *non-contiguous* memory access which causes more fetaches from the global memory than the naive implementation here the search is on contiguous memeory and hence is faster. Therefore, on this dataset the KD tree traversal converges at a higher runtime than the naive approach. The naive search accesses more data but contiguously, whereas, KD tree search jumps around nodes, looking at non-contiguous data and thus takes more time even with lesser comaprasions. 
 
 ### Bloopers
 Error in the Rotation computation deformed the point cloud:
