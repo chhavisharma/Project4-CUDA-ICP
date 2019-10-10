@@ -59,24 +59,24 @@ unsigned int KDTree::nextPowerOf2(unsigned int n)
 void buildTree(std::vector<glm::vec3> &ybuff, int start, int end, int pidx, std::vector<glm::vec4>& ybufftree, int depth) {
 	
 	if(start <= end) {
-		std::cout << "depth=" << depth;
+		//std::cout << "depth=" << depth;
 
 		// Get current depth dim
 		int d = depth % dimension;
 
-		std::cout << " dims=" << d << "\n";
+		//std::cout << " dims=" << d << "\n";
 
 		// Sort by dim
 		if (d == X) { std::sort(ybuff.begin() + start, ybuff.begin() + end + 1, sortbyX); }
 		else if (d == Y) { std::sort(ybuff.begin() + start, ybuff.begin() + end + 1, sortbyY); }
 		else if (d == Z) { std::sort(ybuff.begin() + start, ybuff.begin() + end + 1, sortbyZ); }
 
-		std::cout << "Finished sorting !\n";
+		//std::cout << "Finished sorting !\n";
 
 		// pick median 
 		int mid = (start + end) / 2;
 
-		std::cout << "Mid is = " << mid << "\n";
+		//std::cout << "Mid is = " << mid << "\n";
 
 		// store the parent // set not null in w 
 		ybufftree[pidx].x = ybuff[mid].x;
@@ -84,7 +84,7 @@ void buildTree(std::vector<glm::vec3> &ybuff, int start, int end, int pidx, std:
 		ybufftree[pidx].z = ybuff[mid].z;
 		ybufftree[pidx].w = 1.0f;
 
-		std::cout << "Set at pidx = " << pidx << " | vales =" << ybuff[mid].x << " " << ybuff[mid].y << " " << ybuff[mid].z << "\n";
+		//std::cout << "Set at pidx = " << pidx << " | vales =" << ybuff[mid].x << " " << ybuff[mid].y << " " << ybuff[mid].z << "\n";
 
 		//build tree for left and right child
 
@@ -215,29 +215,29 @@ void KDTree::initCpuKDTree(std::vector<glm::vec3> &ybuff, std::vector<glm::vec4>
 	int parentIdx = 0;
 	int depth = 0;
 	
-	std::cout << "Pritnting input \n";
-	printKDTree3(ybuff);
+	//std::cout << "Pritnting input \n";
+	//printKDTree3(ybuff);
 
 	// Compute the KDTree
 	buildTree(ybuff, 0, n-1, parentIdx, ybufftree, depth);
-
-	std::cout << "Pritnting level order kd tree \n";
-	printKDTree4(ybufftree);
+	std::cout << "Computed KD tree \n";
+	//std::cout << "Pritnting level order kd tree \n";
+	//printKDTree4(ybufftree);
 
 	// Testing KD tree
+	//int idx = -1;
+	//float dist = -1.0f;
 
-	int idx = -1;
-	float dist = -1.0f;
-	//glm::vec3 goal(7.1, 1.1, 4.1);
-	glm::vec3 goal(1.1, 7.1, 4.8);
-	std::cout << "Searching the kd tree for point \n";
-	std::cout << goal.x << " " << goal.y << " " << goal.z << std::endl;
-	
-	std::vector<mystack> stk(ybufftree.size());
-	KDclosestPointCPU(ybufftree, goal, idx, dist, stk);
-	
-	std::cout << "Closest Point at idx "<<idx<<" with dist "<< dist << std::endl;
-	std::cout << ybufftree[idx].x<<" " << ybufftree[idx].y<< " " << ybufftree[idx].z << std::endl;
+	////glm::vec3 goal(7.1, 1.1, 4.1);
+	//glm::vec3 goal(1.1, 7.1, 4.8);
+	//std::cout << "Searching the kd tree for point \n";
+	//std::cout << goal.x << " " << goal.y << " " << goal.z << std::endl;
+	//
+	//std::vector<mystack> stk(ybufftree.size());
+	//KDclosestPointCPU(ybufftree, goal, idx, dist, stk);
+	//
+	//std::cout << "Closest Point at idx "<<idx<<" with dist "<< dist << std::endl;
+	//std::cout << ybufftree[idx].x<<" " << ybufftree[idx].y<< " " << ybufftree[idx].z << std::endl;
 
 	return;
 }

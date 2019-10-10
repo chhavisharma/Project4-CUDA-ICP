@@ -17,8 +17,11 @@ namespace Points {
 	void initGPU(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer);
 	void stepSimulationGPUNaive(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, float dt);
 
-	void initGPUKD(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3> &Xbuffer, std::vector<glm::vec4> &YbufferTree, std::vector<mystack>& st, int sizeOfmystack);
-	void stepSimulationGPUKD(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer, std::vector<glm::vec4> &YbufferTree, std::vector<mystack>& st, int sizeOfmystack, float dt);
+	void initGPUKD(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3> &Xbuffer, glm::vec4*YbufferTree,
+		glm::ivec3* track, int treesize, int tracksize);
+
+	void stepSimulationGPUKD(std::vector<glm::vec3> &Ybuffer, std::vector<glm::vec3>&Xbuffer,
+		 int treesize, int tracksize , float dt);
 
 	void copyPointsToVBO(float *vbodptr_positions, float *vbodptr_velocities);
     void endSimulation();

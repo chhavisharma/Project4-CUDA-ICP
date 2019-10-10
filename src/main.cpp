@@ -15,8 +15,8 @@
 
 // LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
 #define VISUALIZE 1
-#define GPUNAIVE 1
-#define GPUKDTREE 0
+#define GPUNAIVE 0
+#define GPUKDTREE 1
 #define COHERENT_GRID 0
 #define dims 3
 
@@ -26,10 +26,11 @@ float DT = 0.2f;
 
 std::vector<glm::vec3> Ybuffer;
 std::vector<glm::vec3> Xbuffer;
-std::vector<glm::vec4> YbufferTree;
-std::vector<mystack> st;
-int sizeOfmystack;
 
+glm::vec4 *YbufferTree;
+glm::ivec3 *track;
+int treesize;
+int tracksize;
 
 // Data read function 
 void read_data(std::vector<glm::vec3> &buffer, std::string filename, float offset) {
@@ -90,14 +91,12 @@ int main(int argc, char* argv[]) {
 
 	// Load data into cpu buffers
 	printf("** Read Point Cloud Data **\n");
-	int y_sz = 0;
-	int x_sz = 0;
 
 	std::cout << "Data File Y(target): " << argv[1] << std::endl;
-	read_data(Ybuffer, argv[1], 0.0000000000f);
+	read_data(Ybuffer, argv[1], 0.0f);
 
 	std::cout << "Data File X(source): " << argv[2] << std::endl;
-	read_data(Xbuffer, argv[2], 0.0000000000f);
+	read_data(Xbuffer, argv[2], 0.05f);
 
 	// Initialize drawing state
 	N_FOR_VIS = Ybuffer.size() + Xbuffer.size();
@@ -108,30 +107,31 @@ int main(int argc, char* argv[]) {
 
 #if GPUKDTREE
 	std::cout << "Building KDsearch tree for Y" << std::endl;
-	std::vector<glm::vec3> ybuff ={
-							glm::vec3(1,7,5),
-							glm::vec3(2,6,6),
-							glm::vec3(3,5,7),
-							glm::vec3(4,4,1),
-							glm::vec3(5,3,2),
-							glm::vec3(6,2,3),
-							glm::vec3(7,1,4)
-							};
-	int size = KDTree::nextPowerOf2(2*(ybuff.size()+1)); // to store nulls for leaf nodes
+
+	//std::vector<glm::vec3> ybuff ={
+	//						glm::vec3(1,7,5),
+	//						glm::vec3(2,6,6),
+	//						glm::vec3(3,5,7),
+	//						glm::vec3(4,4,1),
+	//						glm::vec3(5,3,2),
+	//						glm::vec3(6,2,3),
+	//						glm::vec3(7,1,4)
+	//						};
+
+	int size = KDTree::nextPowerOf2(2*(Ybuffer.size()+1)); // to store nulls for leaf nodes
 	std::vector<glm::vec4> YbuffTree(size, glm::vec4(0.0f));
 
 	// Init mystack
-	sizeOfmystack = ilog2ceil(size);
-	mystack stmp;
-	stmp.dataIdx = 0;
-	stmp.depth = 0;
-	stmp.good = true;
-	std::cout << "sizeOfmystack = "<< sizeOfmystack<<"\n";
-	std::vector<mystack> stck(x_sz * sizeOfmystack, stmp);
-	st.assign(stck.begin(), stck.end());
+	int sz = (int)log2(size);
+	int X = (int)Xbuffer.size();
+	std::vector<glm::ivec3> tk(X*sz, glm::ivec3(0,0,0));
+	track = &tk[0];
 
-	KDTree::initCpuKDTree(ybuff,YbuffTree);
-	YbufferTree.assign(YbuffTree.begin(), YbuffTree.end());
+	KDTree::initCpuKDTree(Ybuffer,YbuffTree);
+	YbufferTree= &YbuffTree[0];
+
+	tracksize = X * sz;
+	treesize  = size;
 
 # endif
  
@@ -223,13 +223,13 @@ bool init(int argc, char **argv) {
 	cudaGLRegisterBufferObject(pointVBO_positions);
 	cudaGLRegisterBufferObject(pointVBO_velocities);
 
-	// Initialize N-body simulation
 	Points::initCpuICP(Ybuffer, Xbuffer);
 #if GPUKDTREE
-	Points::initGPUKD(Ybuffer, Xbuffer, YbufferTree, st, sizeOfmystack);
-#else
+	Points::initGPUKD(Ybuffer, Xbuffer, YbufferTree, track, treesize, tracksize);
+#elif GPUNAIVE
 	Points::initGPU(Ybuffer, Xbuffer);
 #endif
+
 	updateCamera();
 
 	initShaders(program);
@@ -317,7 +317,7 @@ void runCUDA() {
 
 	// execute the kernel
 #if GPUKDTREE
-	Points::stepSimulationGPUKD(Ybuffer, Xbuffer, YbufferTree, st, sizeOfmystack, DT);
+	Points::stepSimulationGPUKD(Ybuffer, Xbuffer, treesize, tracksize , DT);
 #elif GPUNAIVE
 	Points::stepSimulationGPUNaive(Ybuffer, Xbuffer, DT);
 #else
