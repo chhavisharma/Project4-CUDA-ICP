@@ -13,6 +13,9 @@ CUDA Iterative Closest Point
              NVIDIA Quadro P1000 4GB (MOORE100B-06)
 * Installation Instructions same as [this project](https://github.com/chhavisharma/Project1-CUDA-Flocking/blob/master/INSTRUCTION.md)
 
+
+
+
 ### Index
 
 - [Introduction]( https://github.com/chhavisharma/Project4-CUDA-ICP#introduction )
@@ -22,12 +25,18 @@ CUDA Iterative Closest Point
 - [Some More Results and Bloopers]( https://github.com/chhavisharma/Project4-CUDA-ICP#bloopers )
 - [Resources and References](https://github.com/chhavisharma/Project4-CUDA-ICP#resources-and-references )
 
+
+
+
 ### Introduction 
 
 In this project, we show different optimzations of the iterative closest point algorithm which can be used to align partially overlapping point clouds of different views of an object. Operations in ICP on large point clouds are highly parallelizable which makes it a good candiate for CUDA based implemantion and optimization.
 
 [Iterative closest point algorithm](https://en.wikipedia.org/wiki/Iterative_closest_point) successively estimates and applies rotation and transaltion between two sets of point clouds of different views of an object to achieve the closest alignment. 
 The algorithm iteratively revises the transformation needed to minimize the distance between corresponding points across the two point clouds. ICP depends on an initial guess of the *rigid body transformation* (Rotation and translation) to acheive good results in case of drastically different views of objects.
+
+
+
 
 
 ### Algorithm
@@ -51,6 +60,9 @@ At each iteration:
  - We do this by mean centring the source and target corrspondances, and then computing the matrix W = transpose(Xmeancntred) * Pmeancntred. Then, the Rotation is U * Transpose(V), where singular value decomposition of W, SVD(W) = USV. Translation, T is Xmean - R * Pmean.      
  - Reapeat until convergence i.e. when predicted Rotation matrix is identity and translation is close to zero.
        
+
+
+
 
 
 ### Implementation Details
@@ -125,8 +137,8 @@ The initial iterations KDtree is slower since the source and target points are h
 ### Bloopers
 In image 1, error in the rotation computation deformed the point cloud and ICP never converged. in image 2 drastic differnce in point clouds causes ICP to misalign data.
 <p align="center">
-   <img src="img/blopper0.gif" width="400"/>
-   <img src="img/blopper.gif" width="400"/>
+   <img src="img/blopper0.gif" width="400" height="400"/>
+   <img src="img/blopper.gif" width="400" height="400"/>
 </p>  
 
 
