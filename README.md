@@ -11,16 +11,16 @@ CUDA Iterative Closest Point
 * Author: Chhavi Sharma ([LinkedIn](https://www.linkedin.com/in/chhavi275/))
 * Tested on: Windows 10, Intel Core(R) Core(TM) i7-6700 CPU @ 3.40GHz 16GB, 
              NVIDIA Quadro P1000 4GB (MOORE100B-06)
+* Installation Instructions same as [this project](https://github.com/chhavisharma/Project1-CUDA-Flocking/blob/master/INSTRUCTION.md)
 
 ### Index
 
-- [Introduction]( )
-- [Algorithm]( )
-- [Implementation Details]( )
-- [Analysis]( )
-- [Future Work] ()
-- [Some More Results and Bloopers]( )
-- [Resources and References]( )
+- [Introduction]( https://github.com/chhavisharma/Project4-CUDA-ICP#introduction )
+- [Algorithm]( https://github.com/chhavisharma/Project4-CUDA-ICP#algorithm )
+- [Implementation Details]( https://github.com/chhavisharma/Project4-CUDA-ICP#implementation-details )
+- [Analysis](https://github.com/chhavisharma/Project4-CUDA-ICP#analysis )
+- [Some More Results and Bloopers]( https://github.com/chhavisharma/Project4-CUDA-ICP#bloopers )
+- [Resources and References](https://github.com/chhavisharma/Project4-CUDA-ICP#resources-and-references )
 
 ### Introduction 
 
@@ -44,12 +44,11 @@ At each iteration:
 </p>   
 
 <p align="center">
-  <img src="img/Capture0.PNG" width="280" />
-  <img src="img/Capture1.PNG" width="280" />
-  <img src="img/Capture2.PNG" width="280" />
+  <img src="img/Capture1.PNG" width="340" />
+  <img src="img/Capture2.PNG" width="340" />
 </p>
 
- - We do this by mean centring the source and target corrspondances, and then computing the matrix W= transpose(Xmeancntred)* Pmeancntred. Then, the Rotation is U * Transpose(V) where singualr value decomposition of W, ie.e SVD(W) = USV. Translation,T is Xmean-R * Pmean.      
+ - We do this by mean centring the source and target corrspondances, and then computing the matrix W = transpose(Xmeancntred) * Pmeancntred. Then, the Rotation is U * Transpose(V), where singular value decomposition of W, SVD(W) = USV. Translation, T is Xmean - R * Pmean.      
  - Reapeat until convergence i.e. when predicted Rotation matrix is identity and translation is close to zero.
        
 
@@ -101,6 +100,8 @@ The point cloud data is also rendered iteratively to show the chages made by the
 </p>  
 
 
+
+
 ### Analysis
 
 The time taken per iteration for the above three cases on the point cloud data of partially overlapping views of the 'Stanford Bunny' is plotted below:-
@@ -119,16 +120,16 @@ The initial iterations KDtree is slower since the source and target points are h
 
  - However, we see a that the best time on GPU Naive is better than GPU KD-Tree on the current dataset. Even though GPU KD Tree should be theoratically faster (log(n)), the memory overheads of traversing the tree in the current implementation dominate the runtime when the number of points are not very large. The tree traversal is also *non-contiguous* memory access which causes more fetaches from the global memory than the naive implementation here the search is on contiguous memeory and hence is faster. Therefore, on this dataset the KD tree traversal converges at a higher runtime than the naive approach. The naive search accesses more data but contiguously, whereas, KD tree search jumps around nodes, looking at non-contiguous data and thus takes more time even with lesser comaprasions. 
 
+
+
 ### Bloopers
-Error in the Rotation computation deformed the point cloud and ICP never converged:
+In image 1, error in the rotation computation deformed the point cloud and ICP never converged. in image 2 drastic differnce in point clouds causes ICP to misalign data.
 <p align="center">
-   <img src="img/blopper0.gif" width="700"/>
+   <img src="img/blopper0.gif" width="400"/>
+   <img src="img/blopper.gif" width="400"/>
 </p>  
 
-Drastic differnce in point clouds causes ICP to misalign data:
-<p align="center">
-   <img src="img/blopper.gif" width="700"/>
-</p>  
+
 
 ### Resources and References 
 [icp.pdf](http://ais.informatik.uni-freiburg.de/teaching/ss11/robotics/slides/17-icp.pdf)  
