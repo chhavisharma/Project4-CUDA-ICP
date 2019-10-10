@@ -84,7 +84,7 @@ The average search time on a KD tree for target data of size n is O(log(n)).
 
 The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive. CUDA does not support very deep recursiions and therfore an iterative traversal technique to perfrom nearest neighbour search on the KD tree is implemented. To facilitate iterative traveral and backtracking over the tree, a book-keeping array is also maintained. The pseudo code for Nearest neighbour search in KD tree is as follows:-
 <p align="center">
-   <img src="img/NNpseudo.PNG"/>
+   <img src="img/NNpseudo.PNG" width="600"/>
 </p> 
 
 <p align="center"> Search Improvment (Runtime)</p>
@@ -103,12 +103,14 @@ The point cloud data is also rendered iteratively to show the chages made by the
 
 ### Analysis
 
-The time taken per iteration for the above three cases is plotted below:-
+The time taken per iteration for the above three cases on the point cloud data of partially overlapping views of the 'Stanford Bunny' is plotted below:-
 <p align="center">
-   <img src="img/g1.PNG" />
-   <img src="img/g2.PNG" />
+   <img src="img/g1.PNG" width="600"/>
+   <img src="img/g2.PNG" width="600"/>
 
 </p>  
+
+The data does not have perfect correspondances, and therefore the plots never completely overlap. In most real applications of ICP, the data only has partal overlap and therfore this is a good example set.
 
  - The GPU Naive perfromsbetter than CPU ecuase each element is the source looks of the Nearrest neighbour in the target paralelly on CUDA.
 
@@ -118,8 +120,15 @@ The initial iterations KDtree is slower since the source and target points are h
  - However, we see a that the best time on GPU Naive is better than GPU KD-Tree on the current dataset. Even though GPU KD Tree should be theoratically faster (log(n)), the memory overheads of traversing the tree in the current implementation dominate the runtime when the number of points are not very large. The tree traversal is also *non-contiguous* memory access which causes more fetaches from the global memory than the naive implementation here the search is on contiguous memeory and hence is faster. Therefore, on this dataset the KD tree traversal converges at a higher runtime than the naive approach. The naive search accesses more data but contiguously, whereas, KD tree search jumps around nodes, looking at non-contiguous data and thus takes more time even with lesser comaprasions. 
 
 ### Bloopers
-Error in the Rotation computation deformed the point cloud:
-![](img/blopper.gif)
+Error in the Rotation computation deformed the point cloud and ICP never converged:
+<p align="center">
+   <img src="img/blopper0.gif" width="600"/>
+</p>  
+
+Drastic differnce in point clouds causes ICP to misalign data:
+<p align="center">
+   <img src="img/blopper.gif" width="600"/>
+</p>  
 
 ### Resources and References 
 [icp.pdf](http://ais.informatik.uni-freiburg.de/teaching/ss11/robotics/slides/17-icp.pdf)  
