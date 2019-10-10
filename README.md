@@ -78,13 +78,13 @@ The CPU implementation is optimised by using a CUDA kernel to perfrom the coress
 We further optimize each iteration by optimizing the search per source point. We implement a KD-tree structure to search the target 3D point cloud data. A kd tree is a binary tree in which every leaf node is a k-dimensional point. Every non-leaf node can be thought of as implicitly generating a splitting hyperplane that divides the space into two parts, known as half-spaces. Points to the left of this hyperplane are represented by the left subtree of that node and points to the right of the hyperplane are represented by the right subtree. 
 <p align="center">
    <img src="img/kdtree2.png" width="320" height="420"/>
-   <img src="img/kdtree.png" width="320" height="420" />
+   <img src="img/kdtree.png" width="420" height="420" />
 </p>    
 The average search time on a KD tree for target data of size n is O(log(n)).
 
 The K-D tree is constructed on the CPU and the stored in a contiguous linear level-order traveral format. It is then transfered to the GPU where the search travel is iterative rather than recursive. CUDA does not support very deep recursiions and therfore an iterative traversal technique to perfrom nearest neighbour search on the KD tree is implemented. To facilitate iterative traveral and backtracking over the tree, a book-keeping array is also maintained. The pseudo code for Nearest neighbour search in KD tree is as follows:-
 <p align="center">
-   <img src="img/NNpseudo.PNG" width="600"/>
+   <img src="img/NNpseudo.PNG" width="500"/>
 </p> 
 
 <p align="center"> Search Improvment (Runtime)</p>
@@ -122,12 +122,12 @@ The initial iterations KDtree is slower since the source and target points are h
 ### Bloopers
 Error in the Rotation computation deformed the point cloud and ICP never converged:
 <p align="center">
-   <img src="img/blopper0.gif" width="600"/>
+   <img src="img/blopper0.gif" width="700"/>
 </p>  
 
 Drastic differnce in point clouds causes ICP to misalign data:
 <p align="center">
-   <img src="img/blopper.gif" width="600"/>
+   <img src="img/blopper.gif" width="700"/>
 </p>  
 
 ### Resources and References 
