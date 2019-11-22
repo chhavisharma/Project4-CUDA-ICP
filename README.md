@@ -12,7 +12,8 @@ CUDA Iterative Closest Point
 * Tested on: Windows 10, Intel Core(R) Core(TM) i7-6700 CPU @ 3.40GHz 16GB, 
              NVIDIA Quadro P1000 4GB (MOORE100B-06)
 * Installation Instructions same as [this project](https://github.com/chhavisharma/Project1-CUDA-Flocking/blob/master/INSTRUCTION.md)
-*Execution Instructions: main.cpp ./../data/bun045.ply ./../data/bun000.ply 
+
+* **Execution Instructions**: main.cpp ./../data/bun045.ply ./../data/bun000.ply 
 (having issues with debug mode, runs fine is release mode in VS15,2017)
 
 
